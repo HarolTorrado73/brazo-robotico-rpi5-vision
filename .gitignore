@@ -7,6 +7,34 @@ __pycache__/
 .eggs/
 objects_images/*.jpg
 .DS_Store
+Thumbs.db
+
+# Entorno y secretos (no subir credenciales ni API keys)
+.env
+.env.*
+!.env.example
+
+# IDE y editores
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Tests y cobertura
+.coverage
+htmlcov/
+coverage.xml
+.tox/
+.mypy_cache/
+.ruff_cache/
+
+# Build / distribución
+dist/
+build/
+*.egg
+
+# Logs locales
+*.log
 
 # Guía local de commits y Git (no versionar)
 COMMIT_LOCAL.md
