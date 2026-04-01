@@ -237,8 +237,10 @@ class Robot:
             if articulacion == 'base_stepper':
                 if self.robot.controlador_stepper:
                     self.robot.controlador_stepper.mover_pasos(200, direccion=direccion, velocidad=800)
+                elif 'base' in self.robot.controlador_servo.servos:
+                    self.robot.controlador_servo.mover_por_tiempo('base', direccion, 0.5, velocidad=0.4)
                 else:
-                    log.warning("Stepper no disponible")
+                    log.warning("Base no disponible")
             else:
                 self.robot.controlador_servo.mover_por_tiempo(articulacion, direccion, 0.5, velocidad=0.4)
             log.info(f"{articulacion} movido dir={direccion}")

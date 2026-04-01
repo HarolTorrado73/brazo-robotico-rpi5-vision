@@ -282,7 +282,8 @@ def api_escanear():
 @app.route('/api/mover', methods=['POST'])
 def api_mover():
     """Control manual rapido: {'joint': 'shoulder', 'dir': 1, 'time': 0.5}
-    Para base (stepper): {'joint': 'base', 'dir': 1, 'steps': 200}"""
+    Base (servo MG996R canal 4): {'joint': 'base', 'dir': 1, 'time': 0.5, 'speed': 0.4}
+    Si STEPPER_HABILITADO: {'joint': 'base', 'dir': 1, 'steps': 200}"""
     data = request.get_json()
     c = obtener_cerebro()
     joint = data.get('joint', 'shoulder')
@@ -290,11 +291,16 @@ def api_mover():
 
     try:
         if joint == 'base':
-            if c.robot.controlador_stepper is None:
-                return jsonify({'ok': False, 'msg': 'Motor stepper no disponible'})
-            pasos = int(data.get('steps', 200))
-            c.robot.controlador_stepper.mover_pasos(pasos, direccion)
-            return jsonify({'ok': True, 'msg': f'Base movida {pasos} pasos dir={direccion}'})
+            if c.robot.controlador_stepper is not None:
+                pasos = int(data.get('steps', 200))
+                c.robot.controlador_stepper.mover_pasos(pasos, direccion)
+                return jsonify({'ok': True, 'msg': f'Base (stepper) {pasos} pasos dir={direccion}'})
+            if 'base' in c.robot.controlador_servo.servos:
+                tiempo = float(data.get('time', 0.5))
+                velocidad = float(data.get('speed', 0.4))
+                c.robot.controlador_servo.mover_por_tiempo('base', direccion, tiempo, velocidad)
+                return jsonify({'ok': True, 'msg': 'Base (servo) movida'})
+            return jsonify({'ok': False, 'msg': 'Base no disponible'})
         else:
             tiempo = float(data.get('time', 0.5))
             velocidad = float(data.get('speed', 0.4))
@@ -613,11 +619,11 @@ body{font-family:'Segoe UI',system-ui,sans-serif;background:#0f172a;color:#e2e8f
     </div>
     <div class="checklist-group">
       <h4>3 · Mecánica y seguridad</h4>
-      <label class="checklist-row"><input type="checkbox" data-id="c3-1"> Fuentes adecuadas (servos/stepper) y masa común correcta.</label>
+      <label class="checklist-row"><input type="checkbox" data-id="c3-1"> Fuentes adecuadas (servos, incluida base MG996R) y masa común correcta.</label>
       <label class="checklist-row"><input type="checkbox" data-id="c3-2"> Zona de trabajo despejada (personas y cables fuera de alcance).</label>
       <label class="checklist-row"><input type="checkbox" data-id="c3-3"> Probar parada de emergencia y conocer el comportamiento.</label>
       <label class="checklist-row"><input type="checkbox" data-id="c3-4"> Primera sesión con velocidad autónoma conservadora.</label>
-      <label class="checklist-row"><input type="checkbox" data-id="c3-5"> Revisar cableado I2C, GPIO stepper y CSI (CONEXIONES.md).</label>
+      <label class="checklist-row"><input type="checkbox" data-id="c3-5"> Revisar cableado I2C, base en canal 4 y CSI (CONEXIONES.md).</label>
     </div>
     <div class="checklist-group">
       <h4>4 · Audio (si usas voz)</h4>

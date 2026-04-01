@@ -79,6 +79,12 @@ class ControladorServo:
                 'rango_pulso': 400, 'velocidad_min': 0.2,
                 'tiempo_max_positivo': 1.2, 'tiempo_max_negativo': 1.2,
             },
+            'base': {
+                'tipo_servo': 'posicional_180', 'pulso_min': 800, 'pulso_max': 2200,
+                'pulso_neutral': 1500, 'pulso_hold': 1500,
+                'rango_pulso': 400, 'velocidad_min': 0.2,
+                'tiempo_max_positivo': 2.5, 'tiempo_max_negativo': 2.5,
+            },
         }
 
         self._config_path = config_path
@@ -410,6 +416,7 @@ class ControladorServo:
             'elbow': ('tiempo_max_extender', 'tiempo_max_contraer'),
             'wrist': ('tiempo_max_horario', 'tiempo_max_antihorario'),
             'gripper': ('tiempo_max_abrir', 'tiempo_max_cerrar'),
+            'base': ('tiempo_max_horario', 'tiempo_max_antihorario'),
         }
 
         config = {}
@@ -578,16 +585,14 @@ class ControladorRobotico:
             habilitar_stepper: Si es False, no inicializa el motor paso a paso (útil si no está conectado o da error)
         """
         self.controlador_servo = ControladorServo()
-        # Servos: hombro (0), codo (1), muñeca (2), pinza (3) — v2: posicionales ~180° por defecto
-        # Base horizontal: stepper NEMA (o servo en canal 4 si lo añades en config)
+        # Servos: hombro (0), codo (1), muñeca (2), pinza (3), base (4) — MG996R ~180° en base por defecto
         self.controlador_servo.agregar_servo('shoulder', 0)
         self.controlador_servo.agregar_servo('elbow', 1)
         self.controlador_servo.agregar_servo('wrist', 2)
         self.controlador_servo.agregar_servo('gripper', 3)
+        self.controlador_servo.agregar_servo('base', 4)
 
-        # Motor paso a paso para movimiento HORIZONTAL (izquierda/derecha)
-        # TMC2208: STEP=GPIO17, DIR=GPIO18, ENABLE=GPIO19
-        # Segun documentacion de conexiones del proyecto
+        # Opcional: motor paso a paso (NEMA + TMC2208) si STEPPER_HABILITADO — GPIO17/18/19
         self.controlador_stepper = None
         if habilitar_stepper:
             try:
@@ -600,7 +605,7 @@ class ControladorRobotico:
                 log.warning(f"⚠️  No se pudo inicializar motor paso a paso: {e}")
                 log.warning("   El brazo funcionará solo con servos (sin movimiento horizontal)")
         else:
-            log.info("ℹ️  Motor paso a paso deshabilitado (solo servos)")
+            log.info("ℹ️  Motor paso a paso deshabilitado (base por servo MG996R en canal 4)")
 
         # LÍMITES FÍSICOS DEL BRAZO (en segundos de movimiento)
         # Estos límites previenen que el brazo se salga de su rango físico
@@ -620,7 +625,7 @@ class ControladorRobotico:
         }
 
     def mover_base_tiempo(self, direccion, tiempo_segundos, velocidad=0.5):
-        """Base horizontal por stepper (no hay servo 'base' en canales 0–3 por defecto)."""
+        """Base horizontal: prioriza stepper si está habilitado; si no, servo 'base' (canal 4)."""
         lim = self.limites_fisicos['base']['derecha' if direccion == 1 else 'izquierda']
         tiempo_limitado = min(tiempo_segundos, lim)
         if tiempo_limitado <= 0:
@@ -730,14 +735,27 @@ class ControladorRobotico:
         """Obtener estado actual de tiempos acumulados"""
         return self.tiempo_acumulado.copy()
 
+    def _mover_base_segun_pasos_legacy(self, pasos):
+        """Rota la base: NEMA/stepper si está activo; si no, servo MG996R (escalado heurístico desde 'pasos' legacy)."""
+        if pasos == 0:
+            return
+        direccion = 1 if pasos > 0 else -1
+        if self.controlador_stepper is not None:
+            self.controlador_stepper.mover_pasos(abs(pasos), direccion=direccion, velocidad=800)
+            time.sleep(0.3)
+        elif 'base' in self.controlador_servo.servos:
+            t = min(3.0, max(0.12, abs(pasos) / 200.0 * 1.0))
+            self.controlador_servo.mover_por_tiempo('base', direccion, t, 0.45)
+            time.sleep(0.3)
+        else:
+            log.warning("Base: sin stepper ni servo 'base' — movimiento ignorado")
+
     def secuencia_recoger(self, angulo_base_pasos=0, tiempo_bajar=1.5, tiempo_cerrar=0.8, velocidad=0.4):
         """Secuencia completa de pick: posicionar, bajar, agarrar, subir.
         Retorna True si la secuencia se completo sin excepciones."""
         try:
-            if angulo_base_pasos != 0 and self.controlador_stepper:
-                direccion = 1 if angulo_base_pasos > 0 else -1
-                self.controlador_stepper.mover_pasos(abs(angulo_base_pasos), direccion=direccion, velocidad=800)
-                time.sleep(0.3)
+            if angulo_base_pasos != 0:
+                self._mover_base_segun_pasos_legacy(angulo_base_pasos)
 
             self.controlador_servo.mover_por_tiempo('shoulder', -1, tiempo_bajar, velocidad)
             time.sleep(0.2)
@@ -761,10 +779,8 @@ class ControladorRobotico:
     def secuencia_soltar(self, angulo_base_pasos=0, tiempo_bajar=1.2, velocidad=0.4):
         """Secuencia completa de place: posicionar, bajar, soltar, subir."""
         try:
-            if angulo_base_pasos != 0 and self.controlador_stepper:
-                direccion = 1 if angulo_base_pasos > 0 else -1
-                self.controlador_stepper.mover_pasos(abs(angulo_base_pasos), direccion=direccion, velocidad=800)
-                time.sleep(0.3)
+            if angulo_base_pasos != 0:
+                self._mover_base_segun_pasos_legacy(angulo_base_pasos)
 
             self.controlador_servo.mover_por_tiempo('shoulder', -1, tiempo_bajar, velocidad)
             time.sleep(0.2)

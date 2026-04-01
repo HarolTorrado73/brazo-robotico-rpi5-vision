@@ -1,10 +1,11 @@
 # CONFIGURACIÓN DEL SISTEMA - Brazo Robótico
 SERVOS_HABILITADOS = True
-STEPPER_HABILITADO = True
+# Base horizontal: servo MG996R ~180° en PCA9685 canal 4 (servo_config_legacy.json → "base").
+# Pon True solo si usas motor paso a paso + TMC2208 en GPIO 17/18/19 en lugar del servo de base.
+STEPPER_HABILITADO = False
 CAMARA_HABILITADA = True
 
-# Servos: Hombro(0), Codo(1), Muñeca(2), Pinza(3)
-# Stepper NEMA 17: base horizontal via TMC2208 (GPIO 17,18,19)
+# Servos: Hombro(0), Codo(1), Muñeca(2), Pinza(3), Base(4)
 
 MODO_AUTONOMO = True
 COLORES_RECIPIENTES = {

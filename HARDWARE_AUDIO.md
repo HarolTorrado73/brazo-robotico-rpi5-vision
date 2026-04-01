@@ -135,7 +135,7 @@ Lo que **sí** está en el repo (v2): control del brazo, visión YOLO/color, mod
 Lo que **tú** debes cerrar en el mundo real (no se puede “terminar” sin tu banco de pruebas):
 
 1. **Calibración mecánica**: `servo_config_legacy.json` (web) / `servo_config.json` (`ArmController`), calibración de servos y color con tu iluminación.
-2. **Cableado y alimentación**: servos/stepper con fuentes adecuadas; ruido eléctrico puede afectar USB/audio.
+2. **Cableado y alimentación**: servos (incluida base MG996R) con fuentes adecuadas; ruido eléctrico puede afectar USB/audio.
 3. **Audio**: este documento + pruebas `arecord` / `espeak-ng`.
 4. **Objetos y modelo YOLO**: clases que el modelo realmente detecta en tu mesa; si no coinciden, hay que cambiar dataset o modelo.
 5. **Seguridad**: zona de trabajo, emergencia, nadie cerca cuando pruebas.

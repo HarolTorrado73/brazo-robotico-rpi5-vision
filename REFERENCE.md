@@ -9,8 +9,8 @@ Brazo robotico autonomo que detecta objetos con YOLO, clasifica por color (HSV) 
 ## Hardware
 
 - **Raspberry Pi 5**
-- **PCA9685** (I2C 0x40): varios servos **posicionales ~180°**. La **web** usa `servo_config_legacy.json` (`tipo_servo`: `posicional_180`). **`ArmController`** usa `servo_config.json`: el **canal** de cada articulación es el que indiques en `joints.*.channel` (por defecto en repo: hombro **0**, codo **1**, pinza **3**, base **4** para no chocar con el cableado legacy 0–3).
-- **TMC2208 + NEMA 17**: base horizontal (GPIO 17, 18, 19). Opcional: servo de base en un canal libre del PCA9685 (p. ej. **4**) con `ArmController` en lugar del NEMA
+- **PCA9685** (I2C 0x40): varios servos **posicionales ~180°** (MG996R u similares). La **web** usa `servo_config_legacy.json` (`tipo_servo`: `posicional_180`). **`ArmController`** usa `servo_config.json`: el **canal** de cada articulación es el que indiques en `joints.*.channel` (por defecto en repo: hombro **0**, codo **1**, pinza **3**, **base 4**).
+- **Base horizontal:** servo **MG996R** ~180° en **canal 4** del PCA9685 (config `"base"` en `servo_config_legacy.json`). Opcional avanzado: `STEPPER_HABILITADO = True` y TMC2208 + NEMA 17 en GPIO 17/18/19 (ver `robot_controller.ControladorStepper`).
 - **Arducam CSI**: rpicam-still / Picamera2
 
 ## Conexiones críticas
@@ -21,16 +21,16 @@ Ver **CONEXIONES.md**
 
 1. `autonomous_web.py` → Flask en :5000
 2. `CerebroAutonomo` (autonomous_brain.py) orquesta: escanear → detectar → planificar → recoger → depositar
-3. `ControladorRobotico` (robot_controller.py) ejecuta movimientos vía PCA9685 y TMC2208
+3. `ControladorRobotico` (robot_controller.py) ejecuta movimientos vía PCA9685; si `STEPPER_HABILITADO`, también vía TMC2208/NEMA
 
 ## Archivos clave
 
 | Archivo | Función |
 |---------|---------|
-| `arm_system/servo_config_legacy.json` | Pulsos calibrados para web/autónomo (neutral, hold, invertido, tiempos). **NO borrar** |
+| `arm_system/servo_config_legacy.json` | Pulsos calibrados para web/autónomo (neutral, hold, invertido, tiempos). Incluye **base** en canal 4. **NO borrar** |
 | `arm_system/servo_config.json` | **ArmController**: `joints` con `channel`, límites en **grados**, `pulse_*_us`, `home_sequence`, bloque `motion` |
-| `config_sistema.py` | STEPPER_HABILITADO, CAMARA_HABILITADA, etc. |
-| `arm_system/control/robot_controller.py` | ControladorServo (PCA9685), ControladorStepper (TMC2208), ControladorRobotico |
+| `config_sistema.py` | `STEPPER_HABILITADO` (False = base por servo), `CAMARA_HABILITADA`, etc. |
+| `arm_system/control/robot_controller.py` | ControladorServo (PCA9685), ControladorStepper (opcional), ControladorRobotico |
 | `arm_system/control/arm_controller.py` | **ArmController** + **JointSpec**: solo PCA9685, ángulos absolutos, macros `open_gripper` / `move_base`, stub `move_to_target` (OpenCV futuro) |
 | `test_motor.py` (raíz) | Prueba mínima: solo servo **base** con `ArmController` |
 
@@ -52,13 +52,13 @@ Ver **CONEXIONES.md**
 
 ## Problemas conocidos
 
-- **NEMA 17**: a veces no responde (cables, Vref, ENABLE). Alternativa: servo en canal 4
+- **Servo de base:** si no gira o vibra, revisar alimentación, límites µs en `"base"` y que el canal 4 coincida con el cable.
 - **Cámara**: rpicam-still puede dar timeout. CameraManager intenta Picamera2 primero
 - **Servos que caen**: aumentar compensación en pulso_hold (ver `servo_config_legacy.json`)
+- **Stepper opcional:** si activas `STEPPER_HABILITADO` sin NEMA cableado, el arranque puede advertir; la base por defecto es el servo en canal 4.
 
-## Sustituir NEMA 17 por servo base
+## Opcional: motor paso a paso en lugar del servo de base
 
-1. Añadir `"base"` en `servo_config_legacy.json` con canal 4 (y cablear) para el stack web, **o** usar `ArmController` + `servo_config.json` con base en el canal que elijas
-2. En ControladorRobotico: no inicializar stepper, agregar servo 'base'
-3. En api_mover (autonomous_web): joint='base' → controlador_servo.mover_por_tiempo
-4. En autonomous_brain: cambiar angulo_base_pasos por tiempo o ángulo
+1. Cablear TMC2208 + NEMA según GPIO de `ControladorStepper` en `robot_controller.py`.
+2. `STEPPER_HABILITADO = True` en `config_sistema.py`.
+3. No usar a la vez el mismo eje mecánico con dos actuadores; desactiva o retira el servo de base del canal 4 si migras a NEMA.

@@ -39,7 +39,7 @@ Brazo robótico autónomo que **detecta objetos con YOLO**, **clasifica por colo
 
 - **Raspberry Pi 5** (recomendado) con Raspberry Pi OS, I2C y cámara habilitados.
 - **Python 3** con `venv`; herramientas del sistema: `i2c-tools`, dependencias de cámara según [PUESTA_EN_MARCHA.md](PUESTA_EN_MARCHA.md).
-- **Hardware:** PCA9685, servos, cámara CSI (p. ej. Arducam), fuente adecuada; opcional NEMA 17 + TMC2208 para la base.
+- **Hardware:** PCA9685, servos (incluida **base MG996R** ~180° en canal 4), cámara CSI (p. ej. Arducam) y fuente adecuada.
 
 En Windows puedes instalar dependencias “puras” de Python para editar código; el control de servos/cámara está pensado para **Linux en la Pi**.
 
@@ -71,18 +71,17 @@ Abre en el navegador: `http://<IP_DE_LA_RASPBERRY>:5000` (incluye checklist de p
 
 ## Capturas (interfaz web)
 
-La interfaz es visual (vídeo, controles de calibración y modo autónomo). Puedes añadir capturas al repositorio (por ejemplo en `docs/assets/`) y enlazarlas aquí:
+La interfaz es visual (vídeo, controles de calibración y modo autónomo). Guarda imágenes en [`docs/assets/`](docs/assets/) y enlázalas aquí:
 
 ```markdown
 ![Panel web](docs/assets/panel-web.png)
 ```
 
-*(Aún no hay imágenes versionadas; sustituye la ruta cuando las añadas.)*
+*(Sustituye por tus archivos reales cuando los tengas.)*
 
 ## Hardware
 
-- **PCA9685** (I2C `0x40`): servos posicionales ~180° en canales 0–3 (mapeo clásico). La web usa `servo_config_legacy.json`; `ArmController` usa `servo_config.json` (canales en `joints.*.channel`).
-- **TMC2208 + NEMA 17:** base horizontal (GPIO 17, 18, 19), opcional.
+- **PCA9685** (I2C `0x40`): hombro, codo, muñeca, pinza en canales 0–3 y **base** (rotación) en **canal 4** con servo **MG996R** ~180°. La web usa `servo_config_legacy.json`; `ArmController` usa `servo_config.json` (canales en `joints.*.channel`).
 - **Arducam CSI:** `rpicam-still` / Picamera2.
 
 Si usas **servos continuos**, en `arm_system/servo_config_legacy.json` pon `"tipo_servo": "continuo"` por articulación. Ver [REFERENCE.md](REFERENCE.md) y [CONEXIONES.md](CONEXIONES.md).
@@ -119,7 +118,7 @@ arm_system/
 
 ## Configuración
 
-- `config_sistema.py`: `STEPPER_HABILITADO`, `CAMARA_HABILITADA`, `PERMITIR_DETECCION_SIMULADA` (`False` en brazo real para no usar datos ficticios si falla la visión; `True` solo para pruebas sin hardware).
+- `config_sistema.py`: `STEPPER_HABILITADO` (`False` por defecto: base con servo en canal 4; `True` solo si usas motor paso a paso en GPIO 17/18/19), `CAMARA_HABILITADA`, `PERMITIR_DETECCION_SIMULADA` (`False` en brazo real para no usar datos ficticios si falla la visión; `True` solo para pruebas sin hardware).
 - `servo_config_legacy.json`: `tipo_servo` (`posicional_180` o `continuo`), pulsos, tiempos, pinza.
 - `servo_config.json`: calibración en **grados** para `ArmController` (ver [REFERENCE.md](REFERENCE.md)).
 
@@ -136,7 +135,11 @@ Timbre “robot”: **espeak-ng** en Linux; sin eso, **pyttsx3**.
 
 ## Licencia y comunidad
 
-- **Licencia:** [MIT](LICENSE)
-- **Contribuir:** [CONTRIBUTING.md](CONTRIBUTING.md)
-- **Código de conducta:** [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md)
-- **Reportar vulnerabilidades:** [SECURITY.md](SECURITY.md)
+| Recurso | Descripción |
+|---------|-------------|
+| [LICENSE](LICENSE) | **MIT** — uso, modificación y distribución con aviso de copyright. |
+| [CONTRIBUTING.md](CONTRIBUTING.md) | Cómo reportar errores, proponer PRs y estilo de código. |
+| [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md) | Normas de comportamiento (basado en Contributor Covenant 2.1). |
+| [SECURITY.md](SECURITY.md) | Cómo informar vulnerabilidades **sin** usar issues públicos. |
+
+Secretos y entorno local: usa `.env` (ignorado por git); plantilla en [`.env.example`](.env.example).

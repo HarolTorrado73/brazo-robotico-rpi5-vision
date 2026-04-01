@@ -14,7 +14,7 @@ El cableado en los **canales 0–3** depende de si usas la pila **web/legacy** o
 | **1** | Codo (elbow) | Codo (elbow) |
 | **2** | Muñeca (wrist) | *(no usado en el JSON por defecto del repo; puedes asignar una articulación aquí)* |
 | **3** | Pinza (gripper) | Pinza (gripper) |
-| **4** | Libre (base servo si sustituyes NEMA 17) | **Base** (rotación), valor por defecto en el repo |
+| **4** | **Base** (rotación horizontal, MG996R ~180°) | **Base** (rotación), mismo canal en `servo_config.json` → `joints.base` |
 
 Los números de canal en `servo_config.json` deben coincidir con tus cables; si tu base va en otro pin, cambia solo `joints.base.channel`.
 
@@ -29,15 +29,11 @@ Si alternas scripts **sin re-cablear**, los movimientos serán incorrectos: ajus
 | SDA | GPIO 2 (Pin 3) |
 | SCL | GPIO 3 (Pin 5) |
 
-## TMC2208 (NEMA 17 - Base)
+## Base (MG996R)
 
-| TMC2208 | Raspberry Pi |
-|---------|--------------|
-| VM | 12V externa |
-| GND | GND común |
-| STEP | GPIO 17 (Pin 11) |
-| DIR | GPIO 18 (Pin 12) |
-| ENABLE | GPIO 19 (Pin 35) |
+La rotación de la base se hace con un **servo estándar ~180°** (p. ej. **MG996R**) en el **canal 4** del PCA9685, con calibración en `servo_config_legacy.json` → clave `"base"`.
+
+Opcional (avanzado): si en `config_sistema.py` pones `STEPPER_HABILITADO = True`, puedes usar un **TMC2208 + NEMA 17** en GPIO 17 (STEP), 18 (DIR) y 19 (ENABLE) en lugar del servo de base; no es el montaje documentado por defecto.
 
 ## Cámara
 
@@ -46,5 +42,5 @@ Si alternas scripts **sin re-cablear**, los movimientos serán incorrectos: ajus
 
 ## Alimentación
 
-- 5V/20A para servos (PCA9685)
-- 12V/5A para NEMA 17 + TMC2208
+- 5 V con **corriente suficiente** para todos los servos (PCA9685); el MG996R puede tener picos altos: mejor fuente dedicada o al menos no alimentar solo desde el 5 V del pin de la Pi si el brazo es exigente.
+- Si usas montaje opcional con **NEMA 17 + TMC2208**, añade alimentación **12 V** adecuada al motor y driver.

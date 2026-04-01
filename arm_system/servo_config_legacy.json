@@ -56,5 +56,19 @@
     "tiempo_max_abrir": 1.2,
     "tiempo_max_cerrar": 1.2,
     "notas": "pos 1=abrir (pulso_abrir), 0=cerrar (pulso_cerrar). Afinar para tu pinza impresa."
+  },
+  "base": {
+    "canal": 4,
+    "tipo_servo": "posicional_180",
+    "pulso_min": 800,
+    "pulso_max": 2200,
+    "pulso_neutral": 1500,
+    "pulso_hold": 1500,
+    "rango_pulso": 400,
+    "velocidad_min": 0.2,
+    "invertido": false,
+    "tiempo_max_horario": 2.5,
+    "tiempo_max_antihorario": 2.5,
+    "notas": "MG996R en canal 4: rotación horizontal de la base. Calibrar pulso_min/max al recorrido real."
   }
 }
