@@ -1,0 +1,66 @@
+{
+  "_comment": "El campo \"channel\" es el número de salida del PCA9685 (0-15), debe coincidir con el cable. Por defecto: hombro=0, codo=1, pinza=3, base=4 (canal 4 libre si ya tenías 0-3 como en servo_config_legacy). Si tu base va en otro pin, cambia solo \"channel\" en joints.base.",
+  "pca9685": {
+    "i2c_address_hex": "0x40",
+    "pwm_frequency_hz": 50
+  },
+  "motion": {
+    "home_step_deg": 2.0,
+    "home_step_delay_s": 0.025,
+    "default_move_step_deg": 3.0,
+    "default_move_delay_s": 0.02,
+    "rest_margin_deg": 4.0,
+    "rest_settle_s": 0.25,
+    "rest_sequence": ["gripper", "elbow", "shoulder", "base"]
+  },
+  "home_sequence": [
+    "gripper",
+    "elbow",
+    "shoulder",
+    "base"
+  ],
+  "joints": {
+    "base": {
+      "description": "Rotación izquierda/derecha de la base",
+      "channel": 4,
+      "angle_safe_min_deg": 0,
+      "angle_safe_max_deg": 180,
+      "angle_home_deg": 90,
+      "pulse_min_us": 500,
+      "pulse_max_us": 2500,
+      "invert": false
+    },
+    "shoulder": {
+      "description": "Hombro arriba/abajo",
+      "channel": 0,
+      "angle_safe_min_deg": 15,
+      "angle_safe_max_deg": 165,
+      "angle_home_deg": 90,
+      "pulse_min_us": 600,
+      "pulse_max_us": 2400,
+      "invert": false
+    },
+    "elbow": {
+      "description": "Codo arriba/abajo",
+      "channel": 1,
+      "angle_safe_min_deg": 20,
+      "angle_safe_max_deg": 160,
+      "angle_home_deg": 90,
+      "pulse_min_us": 600,
+      "pulse_max_us": 2400,
+      "invert": true
+    },
+    "gripper": {
+      "description": "Pinza: ángulos semánticos abrir/cerrar (ajusta a tu mecánica)",
+      "channel": 3,
+      "angle_safe_min_deg": 25,
+      "angle_safe_max_deg": 120,
+      "angle_home_deg": 90,
+      "angle_open_deg": 25,
+      "angle_close_deg": 115,
+      "pulse_min_us": 1000,
+      "pulse_max_us": 2200,
+      "invert": false
+    }
+  }
+}

@@ -1,0 +1,12 @@
+venv/
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+*.egg-info/
+.eggs/
+objects_images/*.jpg
+.DS_Store
+
+# Guía local de commits y Git (no versionar)
+COMMIT_LOCAL.md

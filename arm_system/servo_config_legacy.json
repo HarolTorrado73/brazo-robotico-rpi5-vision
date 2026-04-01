@@ -1,0 +1,60 @@
+{
+  "shoulder": {
+    "canal": 0,
+    "tipo_servo": "posicional_180",
+    "pulso_min": 800,
+    "pulso_max": 2200,
+    "pulso_neutral": 1500,
+    "pulso_hold": 1500,
+    "rango_pulso": 400,
+    "velocidad_min": 0.2,
+    "invertido": false,
+    "tiempo_max_arriba": 2.8,
+    "tiempo_max_abajo": 2.8,
+    "notas": "Ajusta pulso_min/max al rango mecánico real (~500-2500 µs = teoría 180°). Calibración web actualiza tiempos."
+  },
+  "elbow": {
+    "canal": 1,
+    "tipo_servo": "posicional_180",
+    "pulso_min": 850,
+    "pulso_max": 2150,
+    "pulso_neutral": 1500,
+    "pulso_hold": 1500,
+    "rango_pulso": 400,
+    "velocidad_min": 0.2,
+    "invertido": true,
+    "tiempo_max_extender": 2.6,
+    "tiempo_max_contraer": 2.6,
+    "notas": "invertido=true invierte el eje 0..1 respecto al pulso."
+  },
+  "wrist": {
+    "canal": 2,
+    "tipo_servo": "posicional_180",
+    "pulso_min": 900,
+    "pulso_max": 2100,
+    "pulso_neutral": 1500,
+    "pulso_hold": 1500,
+    "rango_pulso": 350,
+    "velocidad_min": 0.15,
+    "invertido": true,
+    "tiempo_max_horario": 2.0,
+    "tiempo_max_antihorario": 2.0,
+    "notas": "Reduce pulso_max/min si el muñón choca mecánicamente."
+  },
+  "gripper": {
+    "canal": 3,
+    "tipo_servo": "posicional_180",
+    "pulso_min": 1000,
+    "pulso_max": 2200,
+    "pulso_neutral": 1600,
+    "pulso_hold": 1600,
+    "pulso_abrir": 2200,
+    "pulso_cerrar": 1000,
+    "rango_pulso": 400,
+    "velocidad_min": 0.2,
+    "invertido": false,
+    "tiempo_max_abrir": 1.2,
+    "tiempo_max_cerrar": 1.2,
+    "notas": "pos 1=abrir (pulso_abrir), 0=cerrar (pulso_cerrar). Afinar para tu pinza impresa."
+  }
+}

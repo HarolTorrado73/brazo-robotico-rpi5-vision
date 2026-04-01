@@ -1,0 +1,6 @@
+# Opcional: comandos por micrófono + síntesis de voz
+# Raspberry Pi además: sudo apt install -y espeak-ng portaudio19-dev
+# Windows: instalar PyAudio desde wheel si hace falta, o usar solo TTS con pyttsx3
+SpeechRecognition>=3.10.0
+PyAudio>=0.2.14
+pyttsx3>=2.90
