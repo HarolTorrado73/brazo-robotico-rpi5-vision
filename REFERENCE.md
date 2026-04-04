@@ -33,6 +33,7 @@ Ver **CONEXIONES.md**
 | `arm_system/control/robot_controller.py` | ControladorServo (PCA9685), ControladorStepper (opcional), ControladorRobotico |
 | `arm_system/control/arm_controller.py` | **ArmController** + **JointSpec**: solo PCA9685, ángulos absolutos, macros `open_gripper` / `move_base`, stub `move_to_target` (OpenCV futuro) |
 | `test_motor.py` (raíz) | Prueba mínima: solo servo **base** con `ArmController` |
+| `test_grados_servos.py` (raíz) | Consola interactiva para probar **grados** por articulación y ver límites del JSON |
 
 ## `ArmController` (brazo por ángulos, OOP)
 

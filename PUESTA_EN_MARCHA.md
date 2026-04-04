@@ -102,7 +102,38 @@ La Pi **no** trae micrófono ni parlante. Si activas voz y “no funciona”, en
 
 ---
 
-## 6. Documentos relacionados
+## 6. Raspberry Pi OS: `apt upgrade` y error de initramfs
+
+Tras un **`sudo apt upgrade`**, en algunas instalaciones aparece:
+
+- `mkinitramfs: failed to determine device for /`
+- `update-initramfs: failed for /boot/initrd.img-...`
+- `dpkg` deja paquetes a medias (`linux-image-*`, `initramfs-tools`, etc.)
+
+**No es un fallo del software de este repositorio**, sino de **`initramfs-tools`** con `MODULES=dep` (solo incluye módulos “necesarios” y a veces no resuelve bien el disco raíz al generar el initrd).
+
+En una Pi típica, **`/`** está en **`/dev/mmcblk0p2`** (`ext4`); eso es normal. Solución habitual:
+
+1. Forzar **`MODULES=most`** (initramfs más grande pero generación fiable):
+   ```bash
+   echo 'MODULES=most' | sudo tee /etc/initramfs-tools/conf.d/zz-modules-most.conf
+   ```
+   *(Alternativa: en `/etc/initramfs-tools/initramfs.conf` cambiar `MODULES=dep` por `MODULES=most`.)*
+
+2. Regenerar y cerrar el estado de paquetes:
+   ```bash
+   sudo update-initramfs -u -k all
+   sudo dpkg --configure -a
+   sudo apt -f install
+   ```
+
+3. Si todo termina sin error: `sudo reboot`.
+
+Si sigue fallando, conserva la salida de `findmnt /`, `lsblk -f` y `grep -r ^MODULES /etc/initramfs-tools/` para diagnosticar (foros Raspberry Pi / Debian).
+
+---
+
+## 7. Documentos relacionados
 
 | Documento | Contenido |
 |-----------|-----------|

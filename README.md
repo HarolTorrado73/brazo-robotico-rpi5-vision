@@ -67,7 +67,7 @@ python autonomous_web.py
 
 Abre en el navegador: `http://<IP_DE_LA_RASPBERRY>:5000` (incluye checklist de puesta en marcha y enlace a la guía en `/docs/puesta_en_marcha`).
 
-**Prueba mínima del brazo por ángulos** (`ArmController`, solo en la Pi): desde la raíz del repositorio, `python3 test_motor.py`.
+**Prueba mínima del brazo por ángulos** (`ArmController`, solo en la Pi): desde la raíz del repositorio, `python3 test_motor.py` (solo base) o `python3 test_grados_servos.py` (modo interactivo y rangos según `servo_config.json`).
 
 ## Capturas (interfaz web)
 
@@ -90,7 +90,7 @@ Si usas **servos continuos**, en `arm_system/servo_config_legacy.json` pon `"tip
 
 | Documento | Contenido |
 |-----------|-----------|
-| [PUESTA_EN_MARCHA.md](PUESTA_EN_MARCHA.md) | Checklist: calibración, YOLO, seguridad, audio |
+| [PUESTA_EN_MARCHA.md](PUESTA_EN_MARCHA.md) | Checklist: calibración, YOLO, seguridad, audio, **initramfs tras apt** (Pi) |
 | [RECIPIENTES_Y_LUZ.md](RECIPIENTES_Y_LUZ.md) | Cubetas, luz, objetos nuevos para YOLO |
 | [CONEXIONES.md](CONEXIONES.md) | Diagrama de conexiones |
 | [REFERENCE.md](REFERENCE.md) | Guía técnica para desarrollo |
