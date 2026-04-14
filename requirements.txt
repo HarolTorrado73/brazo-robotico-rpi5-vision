@@ -1,17 +1,58 @@
-# Brazo Robotico Con IA - Dependencias
-setuptools>=69.0.2
-wheel>=0.42.0
-numpy>=1.24.2
-PyYAML>=6.0.1
-opencv-python-headless>=4.8.0
-ultralytics>=8.0.0
+# =================================================================
+# requirements.txt — Producción mínima (Raspberry Pi / Linux)
+# =================================================================
+# Instalar en la Pi:
+#   pip install -r requirements.txt
+#
+# Para desarrollo en Windows (sin hardware):
+#   pip install -r requirements-dev.txt
+#
+# Para voz / micrófono (opcional en cualquier plataforma):
+#   pip install -r requirements-optional.txt
+#   sudo apt install espeak-ng portaudio19-dev   # solo en Pi/Linux
+# =================================================================
+
+# --- Web (interfaz principal del sistema) ---
 Flask>=3.0.0
 
-# Raspberry Pi
-adafruit-blinka>=8.32.0
-adafruit-circuitpython-pca9685>=1.0.0
-gpiozero>=2.0.1
-RPi.GPIO>=0.7.0; platform_system=="Linux"
+# --- Serialización YAML (requerida por ultralytics internamente) ---
+PyYAML>=6.0.1
+
+# --- Visión por computadora ---
+# Variante headless: sin dependencias de entorno gráfico (correcta para Pi en modo servidor)
+# Alternativa más ligera: instalar desde sistema: sudo apt install python3-opencv
+#   En ese caso comenta la línea siguiente y el sistema usará la versión del paquete apt.
+opencv-python-headless>=4.8.0
+
+# Álgebra matricial (requerido por color_detector.py y ultralytics)
+numpy>=1.24.2
+
+# --- Detección YOLO ---
+# AVISO DE PESO: ultralytics arrastra torch (~400-700 MB en aarch64/ARM).
+# En la Pi el modelo NCNN precompilado (model.ncnn.bin) se carga igualmente
+# a través de ultralytics sin requerir GPU, pero la instalación es pesada.
+# Si el tiempo de instalación es crítico, pre-descarga la rueda de torch para
+# ARM desde https://pytorch.org antes de ejecutar pip install.
+ultralytics>=8.0.0
+
+# --- Hardware I2C / PCA9685 (SOLO Linux / Raspberry Pi) ---
+# Estas librerías no funcionan en Windows (se instalan pero sin hardware real).
+adafruit-blinka>=8.32.0; platform_system=="Linux"
+adafruit-circuitpython-pca9685>=1.0.0; platform_system=="Linux"
+
+# --- GPIO (SOLO Linux / Raspberry Pi) ---
+# gpiozero: necesario cuando STEPPER_HABILITADO=True en config_sistema.py
+#   (usa OutputDevice para controlar el stepper NEMA/TMC2208)
+gpiozero>=2.0.1; platform_system=="Linux"
+
+# Backend GPIO: instala el que corresponda a tu modelo de Raspberry Pi.
+# No hace daño tener ambos; el correcto será cargado por adafruit-blinka.
+#   Pi 5        → rpi-lgpio  (usa la librería lgpio nativa del kernel)
+#   Pi 1, 2, 3, 4 → RPi.GPIO
 rpi-lgpio>=0.6; platform_system=="Linux"
-# Solo en Raspberry Pi / Linux (en Windows omitir o instalar el resto sin esta línea)
+RPi.GPIO>=0.7.0; platform_system=="Linux"
+
+# --- Cámara (SOLO Linux / Raspberry Pi) ---
+# picamera2: para cámaras CSI (Arducam, Pi Camera v2/v3, etc.)
+# Para cámara USB basta con OpenCV (ya incluido arriba); no hace falta picamera2.
 picamera2>=0.3.25; platform_system=="Linux"

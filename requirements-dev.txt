@@ -1,0 +1,35 @@
+# =================================================================
+# requirements-dev.txt — Desarrollo en Windows (sin hardware Pi)
+# =================================================================
+# Entorno de trabajo en PC/Windows para editar código, ejecutar
+# pruebas de lógica y usar Flask/YOLO sin hardware real.
+#
+# Instalar:
+#   pip install -r requirements-dev.txt
+#
+# NOTA: Las librerías de hardware (adafruit-blinka, gpiozero,
+# RPi.GPIO, picamera2) NO se incluyen aquí; solo funcionan en
+# Linux con los drivers correspondientes de la Raspberry Pi.
+# =================================================================
+
+# --- Herramientas de build (solo necesarias en desarrollo) ---
+setuptools>=69.0.2
+wheel>=0.42.0
+
+# --- Core del sistema (igual que producción, sin hardware) ---
+Flask>=3.0.0
+PyYAML>=6.0.1
+numpy>=1.24.2
+opencv-python-headless>=4.8.0
+
+# --- YOLO (para editar y probar lógica de detección en PC) ---
+# Instala torch para tu plataforma. En Windows con GPU: añade el índice
+# de CUDA de https://pytorch.org si quieres aceleración local.
+ultralytics>=8.0.0
+
+# --- Calidad de código (descomentar según el flujo que uses) ---
+# pytest>=7.0.0
+# pytest-cov>=4.0.0
+# black>=24.0.0
+# ruff>=0.4.0
+# mypy>=1.8.0

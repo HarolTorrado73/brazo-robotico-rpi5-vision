@@ -1,6 +1,20 @@
-# Opcional: comandos por micrófono + síntesis de voz
-# Raspberry Pi además: sudo apt install -y espeak-ng portaudio19-dev
-# Windows: instalar PyAudio desde wheel si hace falta, o usar solo TTS con pyttsx3
+# =================================================================
+# requirements-voice.txt — Alias de compatibilidad
+# =================================================================
+# Este archivo se mantiene para no romper referencias existentes
+# en el código y en la documentación.
+# El contenido completo y actualizado está en:
+#   requirements-optional.txt
+#
+# Instalar (equivalente):
+#   pip install -r requirements-optional.txt
+# =================================================================
+
+# --- Reconocimiento de voz ---
 SpeechRecognition>=3.10.0
+
+# --- Acceso al micrófono ---
 PyAudio>=0.2.14
+
+# --- TTS fallback (cuando espeak-ng no está en el sistema) ---
 pyttsx3>=2.90

@@ -1,0 +1,29 @@
+# =================================================================
+# requirements-optional.txt — Funciones opcionales
+# =================================================================
+# Voz (micrófono + TTS) y cualquier feature extra no crítica.
+# Solo instalar si vas a usar comandos por voz (VOZ_HABILITADA=True
+# en arm_system/config_sistema.py).
+#
+# Instalar:
+#   pip install -r requirements-optional.txt
+#
+# Dependencias del SISTEMA (no pip) requeridas en Raspberry Pi:
+#   sudo apt install espeak-ng portaudio19-dev
+#
+# En Windows:
+#   PyAudio puede requerir la rueda precompilada. Si falla:
+#   pip install pipwin && pipwin install pyaudio
+# =================================================================
+
+# --- Reconocimiento de voz ---
+# Usa la API gratuita de Google Speech (requiere Internet en la Pi).
+SpeechRecognition>=3.10.0
+
+# --- Acceso al micrófono (backend de SpeechRecognition) ---
+PyAudio>=0.2.14
+
+# --- TTS fallback cuando espeak-ng no está disponible en el sistema ---
+# En Linux/Pi se prefiere espeak-ng (apt) que suena más "robótico".
+# pyttsx3 actúa como respaldo multiplataforma.
+pyttsx3>=2.90
