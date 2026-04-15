@@ -51,10 +51,10 @@ def obtener_safe_ctrl() -> SafeController:
     """
     Retorna (creando si es necesario) el SafeController para control manual.
 
-    NOTA: SafeController usa ArmController (ángulos, servo_config.json).
+    SafeController usa ArmController (ángulos, servo_config.json).
     ControladorRobotico (tiempo, modo autónomo) es un subsistema separado.
-    Nunca deben estar activos simultáneamente sobre el mismo PCA9685.
-    El mutex se aplica en /api/mover rechazando si el modo autónomo está corriendo.
+    La exclusión mutua sobre el PCA9685 se garantiza a través de hw_bus.HW_LOCK,
+    compartido entre SafeController y ControladorServo.mover_por_tiempo().
     """
     global _safe_ctrl
     if _safe_ctrl is None:
@@ -290,15 +290,14 @@ def api_detener():
 
 @app.route('/api/home', methods=['POST'])
 def api_home():
-    if hilo_autonomo and hilo_autonomo.is_alive():
-        # Modo autónomo activo: usar cerebro (ControladorRobotico)
-        obtener_cerebro().robot.posicion_home()
-    else:
-        # Control manual: usar SafeController (ArmController, con seguridad)
-        safe = obtener_safe_ctrl()
-        if safe.is_emergency:
-            return jsonify({'ok': False, 'msg': 'Emergency stop activo.'})
-        safe.go_home()
+    safe = obtener_safe_ctrl()
+    if safe.is_emergency:
+        return jsonify({'ok': False, 'msg': 'Emergency stop activo.'})
+    # go_home() usa move_safe() que compite por HW_LOCK: si el modo autónomo
+    # está en medio de un comando, el primer paso de go_home() será rechazado.
+    ok = safe.go_home()
+    if not ok:
+        return jsonify({'ok': False, 'msg': 'go_home() rechazado (hardware ocupado o emergency).'})
     _anunciar_voz('Posición home.')
     return jsonify({'ok': True, 'msg': 'Posicion HOME'})
 
@@ -322,14 +321,11 @@ def api_mover():
       dir = +1 (positivo) / -1 (negativo) / 0 (sin movimiento)
     Cada pulsación mueve PASO_MANUAL_DEG grados en la dirección indicada.
 
-    MUTEX: rechaza si el modo autónomo está activo para evitar conflictos
-    entre SafeController (ArmController) y ControladorRobotico sobre el mismo PCA9685.
+    La exclusión mutua con el modo autónomo la gestiona hw_bus.HW_LOCK:
+    si ControladorServo tiene el lock (ejecutando un comando autónomo),
+    SafeController.move_relative() retornará False y el endpoint lo informa al cliente.
     """
-    if hilo_autonomo and hilo_autonomo.is_alive():
-        return jsonify({
-            'ok': False,
-            'msg': 'Modo autónomo activo. Detén el robot antes de usar control manual.'
-        })
+    from arm_system import hw_bus
 
     data = request.get_json() or {}
     joint = data.get('joint', 'shoulder')
@@ -346,6 +342,16 @@ def api_mover():
             'msg': 'Emergency stop activo. Usar /api/reset_emergency para reanudar.'
         })
 
+    # Verificación rápida (no bloqueante) de disponibilidad del bus.
+    # Es informativa: el rechazo definitivo ocurre dentro de move_relative()
+    # vía HW_LOCK.acquire(timeout=...) en el loop de interpolación.
+    if not hw_bus.HW_LOCK.acquire(blocking=False):
+        return jsonify({
+            'ok': False,
+            'msg': 'Hardware ocupado (modo autónomo en ejecución). Reintenta en un momento.'
+        })
+    hw_bus.HW_LOCK.release()
+
     delta = direccion * PASO_MANUAL_DEG
     ok = safe.move_relative(joint, delta)
 
@@ -355,7 +361,7 @@ def api_mover():
             'msg': f'{joint} movido {delta:+.0f}° → {safe.get_angle(joint):.1f}°'
         })
     else:
-        return jsonify({'ok': False, 'msg': f'Movimiento rechazado por SafeController'})
+        return jsonify({'ok': False, 'msg': 'Movimiento rechazado por SafeController'})
 
 
 @app.route('/api/emergencia', methods=['POST'])

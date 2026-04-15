@@ -8,6 +8,14 @@ import logging as log
 import json
 import os
 
+try:
+    from arm_system import hw_bus as _hw_bus
+except ImportError:
+    try:
+        import hw_bus as _hw_bus  # type: ignore
+    except ImportError:
+        _hw_bus = None  # type: ignore
+
 class ControladorServo:
     """PCA9685: servos posicionales (~180°) por defecto en v2, o continuos si tipo_servo=continuo."""
 
@@ -229,16 +237,36 @@ class ControladorServo:
         """Mueve un servo: posicional (~180°) interpola ángulo en [0,1]; continuo mantiene lógica legacy.
 
         Direccion +1 = subir / abrir / positivo; -1 = bajar / cerrar; 0 = mantener posición actual.
+
+        Adquiere HW_LOCK durante todo el comando (incluyendo tiempo de asentamiento) para
+        garantizar exclusión mutua con SafeController. Si el lock no está disponible en
+        300 ms, el comando se descarta con un aviso.
         """
         if nombre not in self.servos:
             log.error(f"Servo {nombre} no configurado")
             return
 
-        servo = self.servos[nombre]
-        if self._es_servo_posicional(servo):
-            self._mover_por_tiempo_posicional(nombre, servo, direccion, tiempo_segundos, velocidad)
+        if _hw_bus is not None:
+            if not _hw_bus.HW_LOCK.acquire(timeout=0.30):
+                log.warning(
+                    f"[Servo] mover_por_tiempo('{nombre}'): HW_LOCK no disponible "
+                    f"(SafeController activo). Comando descartado."
+                )
+                return
+            try:
+                servo = self.servos[nombre]
+                if self._es_servo_posicional(servo):
+                    self._mover_por_tiempo_posicional(nombre, servo, direccion, tiempo_segundos, velocidad)
+                else:
+                    self._mover_por_tiempo_continuo(nombre, servo, direccion, tiempo_segundos, velocidad)
+            finally:
+                _hw_bus.HW_LOCK.release()
         else:
-            self._mover_por_tiempo_continuo(nombre, servo, direccion, tiempo_segundos, velocidad)
+            servo = self.servos[nombre]
+            if self._es_servo_posicional(servo):
+                self._mover_por_tiempo_posicional(nombre, servo, direccion, tiempo_segundos, velocidad)
+            else:
+                self._mover_por_tiempo_continuo(nombre, servo, direccion, tiempo_segundos, velocidad)
 
     def _mover_por_tiempo_posicional(self, nombre, servo, direccion, tiempo_segundos, velocidad):
         if direccion == 0:
