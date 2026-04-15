@@ -24,8 +24,12 @@ from config_sistema import (
     VOZ_ANUNCIAR_EVENTOS,
     VOZ_MIC_DEVICE_INDEX,
 )
+from safety.safe_controller import SafeController
 
 log.basicConfig(level=log.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
+
+# Grados por pulsación de botón en control manual (SafeController)
+PASO_MANUAL_DEG: float = 10.0
 
 app = Flask(__name__)
 cerebro = None
@@ -33,6 +37,7 @@ hilo_autonomo = None
 hilo_calibracion = None
 estado_calibracion = {'activo': False, 'servo': '', 'fase': '', 'progreso': 0}
 _asistente_voz = None
+_safe_ctrl: SafeController = None
 
 
 def obtener_cerebro():
@@ -40,6 +45,21 @@ def obtener_cerebro():
     if cerebro is None:
         cerebro = CerebroAutonomo(habilitar_hardware=True)
     return cerebro
+
+
+def obtener_safe_ctrl() -> SafeController:
+    """
+    Retorna (creando si es necesario) el SafeController para control manual.
+
+    NOTA: SafeController usa ArmController (ángulos, servo_config.json).
+    ControladorRobotico (tiempo, modo autónomo) es un subsistema separado.
+    Nunca deben estar activos simultáneamente sobre el mismo PCA9685.
+    El mutex se aplica en /api/mover rechazando si el modo autónomo está corriendo.
+    """
+    global _safe_ctrl
+    if _safe_ctrl is None:
+        _safe_ctrl = SafeController()
+    return _safe_ctrl
 
 
 def _anunciar_voz(frase: str) -> None:
@@ -228,6 +248,13 @@ def api_estado():
     estado['calibracion'] = estado_calibracion.copy()
     estado['voz_activa'] = bool(_asistente_voz)
     estado['voz_config_habilitada'] = VOZ_HABILITADA
+
+    # Estado del SafeController (capa de control seguro)
+    safe = obtener_safe_ctrl()
+    estado['safe_emergency'] = safe.is_emergency
+    estado['safe_simulation'] = safe.is_simulation
+    estado['safe_angles'] = safe.get_all_angles()
+
     return jsonify(estado)
 
 
@@ -263,7 +290,15 @@ def api_detener():
 
 @app.route('/api/home', methods=['POST'])
 def api_home():
-    obtener_cerebro().robot.posicion_home()
+    if hilo_autonomo and hilo_autonomo.is_alive():
+        # Modo autónomo activo: usar cerebro (ControladorRobotico)
+        obtener_cerebro().robot.posicion_home()
+    else:
+        # Control manual: usar SafeController (ArmController, con seguridad)
+        safe = obtener_safe_ctrl()
+        if safe.is_emergency:
+            return jsonify({'ok': False, 'msg': 'Emergency stop activo.'})
+        safe.go_home()
     _anunciar_voz('Posición home.')
     return jsonify({'ok': True, 'msg': 'Posicion HOME'})
 
@@ -281,46 +316,84 @@ def api_escanear():
 
 @app.route('/api/mover', methods=['POST'])
 def api_mover():
-    """Control manual rapido: {'joint': 'shoulder', 'dir': 1, 'time': 0.5}
-    Base (servo MG996R canal 4): {'joint': 'base', 'dir': 1, 'time': 0.5, 'speed': 0.4}
-    Si STEPPER_HABILITADO: {'joint': 'base', 'dir': 1, 'steps': 200}"""
-    data = request.get_json()
-    c = obtener_cerebro()
+    """
+    Control manual por ángulos relativos via SafeController.
+    Cuerpo: {'joint': 'shoulder', 'dir': 1}
+      dir = +1 (positivo) / -1 (negativo) / 0 (sin movimiento)
+    Cada pulsación mueve PASO_MANUAL_DEG grados en la dirección indicada.
+
+    MUTEX: rechaza si el modo autónomo está activo para evitar conflictos
+    entre SafeController (ArmController) y ControladorRobotico sobre el mismo PCA9685.
+    """
+    if hilo_autonomo and hilo_autonomo.is_alive():
+        return jsonify({
+            'ok': False,
+            'msg': 'Modo autónomo activo. Detén el robot antes de usar control manual.'
+        })
+
+    data = request.get_json() or {}
     joint = data.get('joint', 'shoulder')
     direccion = int(data.get('dir', 0))
 
-    try:
-        if joint == 'base':
-            if c.robot.controlador_stepper is not None:
-                pasos = int(data.get('steps', 200))
-                c.robot.controlador_stepper.mover_pasos(pasos, direccion)
-                return jsonify({'ok': True, 'msg': f'Base (stepper) {pasos} pasos dir={direccion}'})
-            if 'base' in c.robot.controlador_servo.servos:
-                tiempo = float(data.get('time', 0.5))
-                velocidad = float(data.get('speed', 0.4))
-                c.robot.controlador_servo.mover_por_tiempo('base', direccion, tiempo, velocidad)
-                return jsonify({'ok': True, 'msg': 'Base (servo) movida'})
-            return jsonify({'ok': False, 'msg': 'Base no disponible'})
-        else:
-            tiempo = float(data.get('time', 0.5))
-            velocidad = float(data.get('speed', 0.4))
-            c.robot.controlador_servo.mover_por_tiempo(joint, direccion, tiempo, velocidad)
-            return jsonify({'ok': True, 'msg': f'{joint} movido'})
-    except Exception as e:
-        return jsonify({'ok': False, 'msg': str(e)})
+    if direccion == 0:
+        return jsonify({'ok': True, 'msg': 'Sin movimiento (dir=0)'})
+
+    safe = obtener_safe_ctrl()
+
+    if safe.is_emergency:
+        return jsonify({
+            'ok': False,
+            'msg': 'Emergency stop activo. Usar /api/reset_emergency para reanudar.'
+        })
+
+    delta = direccion * PASO_MANUAL_DEG
+    ok = safe.move_relative(joint, delta)
+
+    if ok:
+        return jsonify({
+            'ok': True,
+            'msg': f'{joint} movido {delta:+.0f}° → {safe.get_angle(joint):.1f}°'
+        })
+    else:
+        return jsonify({'ok': False, 'msg': f'Movimiento rechazado por SafeController'})
 
 
 @app.route('/api/emergencia', methods=['POST'])
 def api_emergencia():
+    """
+    Parada de emergencia total: detiene AMBOS subsistemas.
+    1. SafeController.emergency_stop() — corta PWM del ArmController (control manual)
+    2. ControladorRobotico.apagar_todos() — corta PWM del subsistema autónomo
+    """
+    # Detener SafeController (control manual / ArmController)
+    obtener_safe_ctrl().emergency_stop()
+
+    # Detener ControladorRobotico (modo autónomo / secuencias)
     c = obtener_cerebro()
     c.detener()
     c.robot.controlador_servo.apagar_todos()
     if c.robot.controlador_stepper:
         c.robot.controlador_stepper.deshabilitar()
     c.robot.resetear_tiempos()
+
     if VOZ_HABILITADA and _asistente_voz:
         _asistente_voz.voz.hablar('Parada de emergencia.')
-    return jsonify({'ok': True, 'msg': 'PARADA DE EMERGENCIA - Servos apagados'})
+    return jsonify({'ok': True, 'msg': 'PARADA DE EMERGENCIA - Todos los servos apagados'})
+
+
+@app.route('/api/reset_emergency', methods=['POST'])
+def api_reset_emergency():
+    """
+    Reinicia el emergency stop del SafeController.
+    Solo llamar cuando el brazo esté en posición segura y haya sido
+    inspeccionado físicamente por el operador.
+    """
+    safe = obtener_safe_ctrl()
+    if not safe.is_emergency:
+        return jsonify({'ok': True, 'msg': 'No había emergency stop activo'})
+    safe.reset_emergency()
+    log.warning('[Web] Emergency stop reiniciado por operador desde /api/reset_emergency')
+    return jsonify({'ok': True, 'msg': 'Emergency stop reiniciado. Verificar posición del brazo.'})
 
 
 @app.route('/api/calibrar_servos', methods=['POST'])
@@ -552,7 +625,9 @@ body{font-family:'Segoe UI',system-ui,sans-serif;background:#0f172a;color:#e2e8f
         <button class="btn btn-calib" onclick="apiPost('/api/calibrar_servos')">Calibrar Servos</button>
         <button class="btn btn-calib-color" onclick="apiPost('/api/calibrar_color')">Calibrar Color</button>
         <button class="btn btn-emergency" onclick="apiPost('/api/emergencia')">EMERGENCIA</button>
+        <button class="btn btn-reset-emerg" id="btn-reset-emerg" style="display:none;grid-column:1/-1;background:#7c3aed;color:#fff;padding:10px;font-size:.85rem;font-weight:600;border:none;border-radius:8px;cursor:pointer" onclick="resetEmergencia()">Reset Emergencia</button>
       </div>
+      <div class="safe-status" id="safe-status" style="font-size:.72rem;margin-top:6px;min-height:16px"></div>
       <div class="calib-status" id="calib-status"></div>
       <div class="progress-bar" id="calib-progress-bar" style="display:none"><div class="progress-fill" id="calib-progress-fill" style="width:0%"></div></div>
     </div>
@@ -685,10 +760,15 @@ function apiPost(url, body){
   .then(r=>r.json()).then(d=>{if(d.msg)console.log(d.msg)}).catch(e=>console.error(e));
 }
 function manualMove(joint,dir){
-  apiPost('/api/mover',{joint,dir,time:0.5,speed:0.85});
+  apiPost('/api/mover',{joint,dir});
 }
 function moverBase(dir){
-  apiPost('/api/mover',{joint:'base',dir,steps:200});
+  apiPost('/api/mover',{joint:'base',dir});
+}
+function resetEmergencia(){
+  if(!confirm('¿Confirmas que el brazo está en posición segura y es seguro reanudar?'))return;
+  fetch('/api/reset_emergency',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'})
+  .then(r=>r.json()).then(d=>{console.log(d.msg)}).catch(e=>console.error(e));
 }
 
 function actualizarUI(){
@@ -767,6 +847,20 @@ function actualizarUI(){
     const lb=document.getElementById('log-box');
     if(d.historial_reciente.length){
       lb.innerHTML=d.historial_reciente.slice(-8).reverse().map(h=>`<div>${h.timestamp.split('T')[1].split('.')[0]} [${h.tipo}] ${JSON.stringify(h.datos).substring(0,80)}</div>`).join('');
+    }
+
+    // Estado SafeController
+    const safeStatus=document.getElementById('safe-status');
+    const btnReset=document.getElementById('btn-reset-emerg');
+    if(safeStatus){
+      if(d.safe_emergency){
+        safeStatus.innerHTML='<span style="color:#ef4444;font-weight:700">⚡ SAFE: Emergency Stop activo</span>';
+        if(btnReset)btnReset.style.display='block';
+      } else {
+        const simTag=d.safe_simulation?' <span style="color:#f59e0b">[SIM]</span>':'';
+        safeStatus.innerHTML='<span style="color:#22c55e">&#10003; SAFE: OK</span>'+simTag;
+        if(btnReset)btnReset.style.display='none';
+      }
     }
   }).catch(()=>{});
 }

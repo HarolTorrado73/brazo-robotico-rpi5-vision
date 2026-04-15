@@ -2,6 +2,7 @@ import time
 import logging as log
 from control.robot_controller import ControladorRobotico
 from config_sistema import STEPPER_HABILITADO
+from safety.safe_controller import SafeController
 
 log.basicConfig(level=log.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 
@@ -9,6 +10,8 @@ log.basicConfig(level=log.INFO, format="%(asctime)s - %(levelname)s - %(message)
 class Robot:
     def __init__(self):
         self.robot = ControladorRobotico(habilitar_stepper=STEPPER_HABILITADO)
+        # SafeController para control manual interactivo (ángulos, servo_config.json)
+        self._safe = SafeController()
         self.serial_manager = None
 
         try:
@@ -200,52 +203,69 @@ class Robot:
         self.scan_results = processed_list
 
     def manual_control_menu(self):
-        """Menu de control manual del brazo (basado en tiempo)"""
-        print("\n=== CONTROL MANUAL ===")
-        print("Controles (tiempo en segundos):")
-        print(" [s+] hombro subir   [s-] hombro bajar")
-        print(" [e+] codo extender  [e-] codo contraer")
-        print(" [w+] muneca +       [w-] muneca -")
-        print(" [g+] pinza abrir    [g-] pinza cerrar")
-        print(" [b+] base derecha   [b-] base izquierda")
-        print(" [h] posicion home   [q] volver al menu")
+        """Menu de control manual del brazo via SafeController (ángulos, 10° por paso)."""
+        print("\n=== CONTROL MANUAL (SafeController) ===")
+        print("Cada comando mueve 10° en la dirección indicada:")
+        print(" [s+] hombro +    [s-] hombro -")
+        print(" [e+] codo +      [e-] codo -")
+        print(" [w+] muñeca +    [w-] muñeca -")
+        print(" [g+] pinza abrir [g-] pinza cerrar")
+        print(" [b+] base +      [b-] base -")
+        print(" [h] HOME  [em] emergency stop  [re] reset emergency  [q] volver")
 
         while True:
-            cmd = input("manual> ").strip().lower()
+            sim_tag = " [SIM]" if self._safe.is_simulation else ""
+            emerg_tag = " [EMERGENCY]" if self._safe.is_emergency else ""
+            cmd = input(f"manual{sim_tag}{emerg_tag}> ").strip().lower()
             if cmd == 'q':
                 break
             elif cmd == 'h':
-                self.robot.posicion_home()
+                self._safe.go_home()
+            elif cmd == 'em':
+                self._safe.emergency_stop()
+                print("*** Emergency stop activado. Usa 're' para reanudar. ***")
+            elif cmd == 're':
+                self._safe.reset_emergency()
+                print("Emergency stop reiniciado.")
             else:
                 self._ejecutar_comando_manual(cmd)
 
     def _ejecutar_comando_manual(self, cmd):
-        """Parsea y ejecuta comandos manuales por tiempo."""
+        """
+        Parsea y ejecuta comandos manuales pasando por SafeController.
+        Cada pulsación mueve 10° en la dirección indicada.
+        """
+        PASO_DEG = 10.0
         mapa = {
-            's+': ('shoulder', 1), 's-': ('shoulder', -1),
-            'e+': ('elbow', 1), 'e-': ('elbow', -1),
-            'w+': ('wrist', 1), 'w-': ('wrist', -1),
-            'g+': ('gripper', 1), 'g-': ('gripper', -1),
-            'b+': ('base_stepper', 1), 'b-': ('base_stepper', -1),
+            's+': ('shoulder', +PASO_DEG),
+            's-': ('shoulder', -PASO_DEG),
+            'e+': ('elbow',    +PASO_DEG),
+            'e-': ('elbow',    -PASO_DEG),
+            'w+': ('wrist',    +PASO_DEG),
+            'w-': ('wrist',    -PASO_DEG),
+            'g+': ('gripper',  +PASO_DEG),
+            'g-': ('gripper',  -PASO_DEG),
+            'b+': ('base',     +PASO_DEG),
+            'b-': ('base',     -PASO_DEG),
         }
         if cmd not in mapa:
             print("Comando no reconocido")
             return
 
-        articulacion, direccion = mapa[cmd]
-        try:
-            if articulacion == 'base_stepper':
-                if self.robot.controlador_stepper:
-                    self.robot.controlador_stepper.mover_pasos(200, direccion=direccion, velocidad=800)
-                elif 'base' in self.robot.controlador_servo.servos:
-                    self.robot.controlador_servo.mover_por_tiempo('base', direccion, 0.5, velocidad=0.4)
-                else:
-                    log.warning("Base no disponible")
-            else:
-                self.robot.controlador_servo.mover_por_tiempo(articulacion, direccion, 0.5, velocidad=0.4)
-            log.info(f"{articulacion} movido dir={direccion}")
-        except Exception as e:
-            log.error(f"Error: {e}")
+        articulacion, delta = mapa[cmd]
+
+        if self._safe.is_emergency:
+            log.error("[Manual] Emergency stop activo. Usa 'e' en el menú para reiniciarlo.")
+            return
+
+        ok = self._safe.move_relative(articulacion, delta)
+        if ok:
+            log.info(
+                "[Manual] %s %+.0f° → %.1f°",
+                articulacion, delta, self._safe.get_angle(articulacion),
+            )
+        else:
+            log.warning("[Manual] Movimiento rechazado por SafeController: %s %+.0f°", articulacion, delta)
 
     def _simulate_detection(self):
         """Simular deteccion de objetos para modo demo"""
@@ -373,6 +393,7 @@ class Robot:
         finally:
             log.info("Cerrando controlador del robot.")
             self.robot.cerrar()
+            self._safe.close()
             if self.serial_manager:
                 self.serial_manager.close()
 

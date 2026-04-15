@@ -11,10 +11,11 @@
     "default_move_delay_s": 0.02,
     "rest_margin_deg": 4.0,
     "rest_settle_s": 0.25,
-    "rest_sequence": ["gripper", "elbow", "shoulder", "base"]
+    "rest_sequence": ["gripper", "wrist", "elbow", "shoulder", "base"]
   },
   "home_sequence": [
     "gripper",
+    "wrist",
     "elbow",
     "shoulder",
     "base"
@@ -48,6 +49,16 @@
       "angle_home_deg": 90,
       "pulse_min_us": 600,
       "pulse_max_us": 2400,
+      "invert": true
+    },
+    "wrist": {
+      "description": "Muñeca: rotación (ajusta angle_safe_min/max al recorrido mecánico real)",
+      "channel": 2,
+      "angle_safe_min_deg": 20,
+      "angle_safe_max_deg": 160,
+      "angle_home_deg": 90,
+      "pulse_min_us": 900,
+      "pulse_max_us": 2100,
       "invert": true
     },
     "gripper": {

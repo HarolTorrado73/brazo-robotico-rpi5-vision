@@ -63,8 +63,9 @@ class ArmController:
     JOINT_BASE = "base"
     JOINT_SHOULDER = "shoulder"
     JOINT_ELBOW = "elbow"
+    JOINT_WRIST = "wrist"
     JOINT_GRIPPER = "gripper"
-    KNOWN_JOINTS = (JOINT_BASE, JOINT_SHOULDER, JOINT_ELBOW, JOINT_GRIPPER)
+    KNOWN_JOINTS = (JOINT_BASE, JOINT_SHOULDER, JOINT_ELBOW, JOINT_WRIST, JOINT_GRIPPER)
 
     def __init__(
         self,
@@ -404,6 +405,10 @@ class ArmController:
     def move_elbow(self, angle_deg: Number, *, smooth: bool = False) -> float:
         """Codo arriba/abajo."""
         return self.set_joint_angle(self.JOINT_ELBOW, angle_deg, smooth=smooth)
+
+    def move_wrist(self, angle_deg: Number, *, smooth: bool = False) -> float:
+        """Muñeca: rotación horaria/antihoraria."""
+        return self.set_joint_angle(self.JOINT_WRIST, angle_deg, smooth=smooth)
 
     def open_gripper(self, *, smooth: bool = True) -> float:
         """Abre la pinza usando ``angle_open_deg`` del JSON (o el mínimo seguro si falta)."""
