@@ -38,3 +38,7 @@ build/
 
 # Guía local de commits y Git (no versionar)
 COMMIT_LOCAL.md
+
+
+# ignorar la carptea .cursor
+.cursor/
