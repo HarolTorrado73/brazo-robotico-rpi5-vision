@@ -1,0 +1,30 @@
+# =================================================================
+# requirements-pi-servos.txt — Raspberry Pi SIN visión YOLO (ahorra ~1–2 GB)
+# =================================================================
+# Usa esto si `pip install -r requirements.txt` falla por espacio en disco
+# o si solo necesitas: Flask + PCA9685 + GPIO + calibración de servos.
+#
+# OpenCV: instálalo desde APT (mucho más liviano que la rueda pip en ARM):
+#   sudo apt install -y python3-opencv
+#
+# Crea el venv con paquetes del sistema para reutilizar python3-opencv:
+#   python3 -m venv venv --system-site-packages
+#   source venv/bin/activate
+#   pip install --no-cache-dir -r requirements-pi-servos.txt
+#
+# El cerebro autónomo seguirá arrancando; YOLO quedará deshabilitado
+# (verás un warning en log) hasta instales torch + ultralytics.
+# =================================================================
+
+Flask>=3.0.0
+PyYAML>=6.0.1
+numpy>=1.24.2
+
+# NO incluir opencv-python-headless aquí: usar python3-opencv del sistema (apt).
+
+adafruit-blinka>=8.32.0; platform_system=="Linux"
+adafruit-circuitpython-pca9685>=1.0.0; platform_system=="Linux"
+gpiozero>=2.0.1; platform_system=="Linux"
+rpi-lgpio>=0.6; platform_system=="Linux"
+RPi.GPIO>=0.7.0; platform_system=="Linux"
+picamera2>=0.3.25; platform_system=="Linux"

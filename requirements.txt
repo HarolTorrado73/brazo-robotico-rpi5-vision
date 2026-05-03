@@ -1,8 +1,20 @@
 # =================================================================
 # requirements.txt — Producción mínima (Raspberry Pi / Linux)
 # =================================================================
-# Instalar en la Pi:
-#   pip install -r requirements.txt
+#
+# --- Si ves "No space left on device" o descargas NVIDIA/CUDA (cientos de MB) ---
+# 1) Libera espacio:  sudo apt clean ; pip cache purge ; df -h
+# 2) Instalación ligera SIN YOLO (recomendado para calibrar servos primero):
+#      sudo apt install -y python3-opencv
+#      python3 -m venv venv --system-site-packages
+#      source venv/bin/activate
+#      pip install --no-cache-dir -r requirements-pi-servos.txt
+# 3) Cuando tengas ~2 GB libres en la SD, añade visión (CPU, sin CUDA pip):
+#      pip install --no-cache-dir torch torchvision --index-url https://download.pytorch.org/whl/cpu
+#      pip install --no-cache-dir ultralytics opencv-python-headless
+#
+# Instalar en la Pi (stack completo, pesado):
+#   pip install --no-cache-dir -r requirements.txt
 #
 # Para desarrollo en Windows (sin hardware):
 #   pip install -r requirements-dev.txt
