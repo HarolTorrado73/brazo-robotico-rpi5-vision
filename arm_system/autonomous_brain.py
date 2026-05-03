@@ -25,9 +25,13 @@ from enum import Enum, auto
 
 log.basicConfig(level=log.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+_arm_dir = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, _arm_dir)
 
-from control.robot_controller import ControladorRobotico
+try:
+    from arm_system.control.robot_controller import ControladorRobotico
+except ImportError:
+    from control.robot_controller import ControladorRobotico
 from config_sistema import (
     STEPPER_HABILITADO,
     CAMARA_HABILITADA,

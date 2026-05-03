@@ -21,6 +21,9 @@ PyYAML>=6.0.1
 numpy>=1.24.2
 
 # NO incluir opencv-python-headless aquí: usar python3-opencv del sistema (apt).
+#
+# PCA9685 / módulo "board": obligatorio en la Pi para I2C; si falta:
+#   pip install adafruit-blinka adafruit-circuitpython-pca9685
 
 adafruit-blinka>=8.32.0; platform_system=="Linux"
 adafruit-circuitpython-pca9685>=1.0.0; platform_system=="Linux"

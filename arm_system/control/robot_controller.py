@@ -1,9 +1,5 @@
 import time
 import threading
-import board
-import busio
-from adafruit_pca9685 import PCA9685
-from gpiozero import OutputDevice
 import logging as log
 import json
 import os
@@ -16,6 +12,16 @@ except ImportError:
     except ImportError:
         _hw_bus = None  # type: ignore
 
+
+def _blinka_pca9685():
+    """Import diferido: evita ModuleNotFoundError al cargar el módulo sin Blinka instalada."""
+    import board  # noqa: PLC0415
+    import busio  # noqa: PLC0415
+    from adafruit_pca9685 import PCA9685  # noqa: PLC0415
+
+    return board, busio, PCA9685
+
+
 class ControladorServo:
     """PCA9685: servos posicionales (~180°) por defecto en v2, o continuos si tipo_servo=continuo."""
 
@@ -27,14 +33,22 @@ class ControladorServo:
         # Para Raspberry Pi 5: usar GPIO 3 (SCL) y GPIO 2 (SDA) - puerto I2C1
         # Estos son los pines físicos 5 y 3 respectivamente
         try:
-            self.i2c = busio.I2C(board.D3, board.D2)
+            board_mod, busio_mod, PCA9685_cls = _blinka_pca9685()
+            self.i2c = busio_mod.I2C(board_mod.D3, board_mod.D2)
             log.info("I2C inicializado en GPIO3/GPIO2 (bus I2C1)")
+        except ImportError as e:
+            msg = (
+                "Falta Adafruit Blinka (módulo 'board'). En el venv: "
+                "pip install adafruit-blinka adafruit-circuitpython-pca9685"
+            )
+            log.error("%s — %s", msg, e)
+            raise ImportError(msg) from e
         except Exception as e:
             log.error(f"Error inicializando I2C en GPIO3/GPIO2: {e}")
             log.error("Verifica que I2C esté habilitado en raspi-config")
             raise
-        
-        self.pca = PCA9685(self.i2c, address=direccion_i2c)
+
+        self.pca = PCA9685_cls(self.i2c, address=direccion_i2c)
         self.pca.frequency = frecuencia
         self.servos = {}
         
@@ -529,6 +543,8 @@ class ControladorStepper:
 
     def __init__(self, pin_paso, pin_direccion, pin_habilitar=None,
                  pasos_por_rev=200, micropasos=16):
+        from gpiozero import OutputDevice  # noqa: PLC0415
+
         self.pin_paso = OutputDevice(pin_paso)
         self.pin_direccion = OutputDevice(pin_direccion)
         self.pin_habilitar = OutputDevice(pin_habilitar) if pin_habilitar else None
@@ -1025,3 +1041,14 @@ class ControladorRobotico:
             self.controlador_servo.pca.deinit()
         except Exception as e:
             log.error(f"Error cerrando controladores: {e}")
+
+
+# Export explícito y comprobación de integridad (evita copias truncadas en la Pi).
+__all__ = ("ControladorServo", "ControladorStepper", "ControladorRobotico")
+if "ControladorRobotico" not in globals():
+    raise RuntimeError(
+        "robot_controller.py incompleto o corrupto: falta la clase ControladorRobotico "
+        "en el espacio de nombres del módulo. Vuelve a copiar el archivo desde el repo "
+        "y comprueba que no exista la carpeta arm_system/control/robot_controller/ "
+        "(debe ser solo el archivo .py)."
+    )

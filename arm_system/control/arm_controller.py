@@ -17,10 +17,6 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Mapping, Optional, Union
 
-import board
-import busio
-from adafruit_pca9685 import PCA9685
-
 log = logging.getLogger(__name__)
 
 Number = Union[int, float]
@@ -104,9 +100,21 @@ class ArmController:
         )
 
         try:
+            import board  # noqa: PLC0415
+            import busio  # noqa: PLC0415
+            from adafruit_pca9685 import PCA9685  # noqa: PLC0415
+
             self.i2c = busio.I2C(board.D3, board.D2)
             self._pca = PCA9685(self.i2c, address=self._i2c_address)
             self._pca.frequency = freq
+        except ImportError as exc:
+            pip_msg = (
+                "Falta Adafruit Blinka / CircuitPython PCA9685. Instala en el venv: "
+                "pip install adafruit-blinka adafruit-circuitpython-pca9685"
+            )
+            log.error("%s — %s", pip_msg, exc)
+            print(pip_msg, file=sys.stderr)
+            sys.exit(1)
         except Exception as exc:
             msg = (
                 "Error: No se detecta el PCA9685. Verifica el cableado I2C y la alimentación "
