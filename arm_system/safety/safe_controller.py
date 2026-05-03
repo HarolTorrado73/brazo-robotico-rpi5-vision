@@ -511,7 +511,10 @@ class SafeController:
         LUEGO (fuera del lock) gestionar error. Así _do_emergency() puede adquirir
         HW_LOCK sin deadlock cuando lo llama la misma cadena de ejecución.
         """
-        from arm_system import hw_bus  # importación local para evitar ciclos en tests
+        try:
+            from arm_system import hw_bus  # ejecución desde raíz del repo
+        except ImportError:
+            import hw_bus  # type: ignore  # ejecución desde carpeta arm_system
 
         for step_angle in steps:
             # ── Comprobar señal de parada (emergency desde otro thread) ──────
@@ -627,7 +630,10 @@ class SafeController:
 
         # Paso 3: cortar PWM — intentar con HW_LOCK; si no está disponible, forzar igualmente
         if self._arm is not None and not self._sim:
-            from arm_system import hw_bus
+            try:
+                from arm_system import hw_bus  # ejecución desde raíz del repo
+            except ImportError:
+                import hw_bus  # type: ignore  # ejecución desde carpeta arm_system
 
             acquired = hw_bus.HW_LOCK.acquire(timeout=0.5)
             try:
