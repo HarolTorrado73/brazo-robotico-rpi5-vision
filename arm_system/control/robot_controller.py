@@ -164,7 +164,14 @@ class ControladorServo:
     @staticmethod
     def _es_servo_posicional(servo):
         t = (servo or {}).get('tipo_servo', 'posicional_180')
-        return str(t).lower() in ('posicional', 'posicional_180', 'standard', 'angular')
+        # Acepta etiquetas explícitas de rango angular (180/270) además de aliases clásicos.
+        return str(t).lower() in (
+            'posicional',
+            'posicional_180',
+            'posicional_270',
+            'standard',
+            'angular',
+        )
 
     def agregar_servo(self, nombre, canal, pulso_min=None, pulso_max=None):
         """Registra un servo. Los limites en us suelen venir de servo_config (pulso_min/max)."""

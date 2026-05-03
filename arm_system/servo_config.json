@@ -1,5 +1,5 @@
 {
-  "_comment": "El campo \"channel\" es el número de salida del PCA9685 (0-15), debe coincidir con el cable. Por defecto: hombro=0, codo=1, pinza=3, base=4 (canal 4 libre si ya tenías 0-3 como en servo_config_legacy). Si tu base va en otro pin, cambia solo \"channel\" en joints.base.",
+  "_comment": "Montaje de servos (2026): base y garra MG996R 180°; hombro y codo DS3218MG 20 kg 270° (mismo mapeo de pulso); muñeca RC alta par ~14.5 kg 180°. PERFIL SEGURO INICIAL: shoulder/elbow en 650-2350 us para evitar topes mecánicos en la primera calibración.",
   "pca9685": {
     "i2c_address_hex": "0x40",
     "pwm_frequency_hz": 50
@@ -22,55 +22,55 @@
   ],
   "joints": {
     "base": {
-      "description": "Rotación izquierda/derecha de la base",
+      "description": "Base: MG996R ~180° (pulso típico 1000–2000 µs)",
       "channel": 4,
       "angle_safe_min_deg": 0,
       "angle_safe_max_deg": 180,
       "angle_home_deg": 90,
-      "pulse_min_us": 500,
-      "pulse_max_us": 2500,
+      "pulse_min_us": 1000,
+      "pulse_max_us": 2000,
       "invert": false
     },
     "shoulder": {
-      "description": "Hombro arriba/abajo",
+      "description": "Hombro: DS3218MG 20 kg, 270° (perfil seguro inicial 650–2350 µs; abrir solo tras prueba)",
       "channel": 0,
       "angle_safe_min_deg": 15,
       "angle_safe_max_deg": 165,
       "angle_home_deg": 90,
-      "pulse_min_us": 600,
-      "pulse_max_us": 2400,
+      "pulse_min_us": 650,
+      "pulse_max_us": 2350,
       "invert": false
     },
     "elbow": {
-      "description": "Codo arriba/abajo",
+      "description": "Codo: DS3218MG 20 kg, 270° (perfil seguro inicial 650–2350 µs)",
       "channel": 1,
       "angle_safe_min_deg": 20,
       "angle_safe_max_deg": 160,
-      "angle_home_deg": 90,
-      "pulse_min_us": 600,
-      "pulse_max_us": 2400,
+      "angle_home_deg": 90, 
+      "pulse_min_us": 650,
+      "pulse_max_us": 2350,
       "invert": true
     },
     "wrist": {
-      "description": "Muñeca: rotación (ajusta angle_safe_min/max al recorrido mecánico real)",
+      "description": "Muñeca: RCXAZ alta par ~180° (canal 2, ajustar límites al recorrido real)",
       "channel": 2,
       "angle_safe_min_deg": 20,
-      "angle_safe_max_deg": 160,
+      "angle_safe_max_deg": 170,
       "angle_home_deg": 90,
-      "pulse_min_us": 900,
-      "pulse_max_us": 2100,
+      "pulse_min_us": 1000,
+      "pulse_max_us": 2000,
       "invert": true
     },
     "gripper": {
-      "description": "Pinza: ángulos semánticos abrir/cerrar (ajusta a tu mecánica)",
+      "description": "Garra: MG996R continuo 360. En capa segura angular se mantiene neutral-only (90°) para evitar giro accidental.",
       "channel": 3,
-      "angle_safe_min_deg": 25,
-      "angle_safe_max_deg": 120,
+      "angle_safe_min_deg": 90,
+      "angle_safe_max_deg": 90,
       "angle_home_deg": 90,
-      "angle_open_deg": 25,
-      "angle_close_deg": 115,
+      "angle_open_deg": 90,
+      "angle_close_deg": 90,
       "pulse_min_us": 1000,
-      "pulse_max_us": 2200,
+      "pulse_max_us": 2000,
       "invert": false
     }
   }
