@@ -12,6 +12,9 @@ import sys
 import time
 import threading
 import logging as log
+import json
+from datetime import datetime
+from pathlib import Path
 
 from flask import Flask, Response, request, jsonify, render_template_string
 
@@ -30,6 +33,41 @@ log.basicConfig(level=log.INFO, format="%(asctime)s [%(levelname)s] %(message)s"
 
 # Grados por pulsación de botón en control manual (SafeController)
 PASO_MANUAL_DEG: float = 10.0
+
+# ------------------------------------------------------------------ #
+# CALIBRACIÓN SEGURA (núcleo)
+# ------------------------------------------------------------------ #
+CAL_STEP_DEG: float = 1.0
+CAL_STEP_DELAY_S: float = 0.05
+CAL_COOLDOWN_MS: int = 120
+CAL_MAX_JUMP = {
+    'shoulder': 8.0,
+    'elbow': 8.0,
+    'base': 12.0,
+    'wrist': 12.0,
+}
+CAL_JOINTS = ('base', 'shoulder', 'elbow', 'wrist')
+
+_calibration_lock = threading.Lock()
+_calibration_move_lock = threading.Lock()
+_calibration_state = {
+    'enabled': False,
+    'active_joint': 'shoulder',
+    'runtime': 'IDLE',  # IDLE | MOVING | STOPPED | EMERGENCY
+    'last_cmd_ts_ms': 0,
+    'stop_requested': False,
+    'limits': {j: {'min': None, 'max': None} for j in CAL_JOINTS},
+}
+
+_calib_log = log.getLogger('calibration')
+if not _calib_log.handlers:
+    _calib_log.setLevel(log.INFO)
+    _calib_log.propagate = False
+    _logs_dir = Path(__file__).resolve().parent.parent / 'logs'
+    _logs_dir.mkdir(parents=True, exist_ok=True)
+    _fh = log.FileHandler(_logs_dir / 'calibration.log', encoding='utf-8')
+    _fh.setFormatter(log.Formatter('%(asctime)s [%(levelname)s] %(message)s'))
+    _calib_log.addHandler(_fh)
 
 app = Flask(__name__)
 cerebro = None
@@ -69,6 +107,131 @@ def _anunciar_voz(frase: str) -> None:
         _asistente_voz.voz.hablar(frase)
     except Exception:
         pass
+
+
+def _is_calibration_enabled() -> bool:
+    with _calibration_lock:
+        return bool(_calibration_state['enabled'])
+
+
+def _calibration_blocked_response(endpoint_name: str):
+    return jsonify({
+        'ok': False,
+        'msg': f'Calibración segura activa. Endpoint bloqueado: {endpoint_name}'
+    }), 423
+
+
+def _calibration_event(action: str, joint: str = '', from_angle=None, to_angle=None, extra: str = '') -> None:
+    _calib_log.info(
+        "action=%s joint=%s from=%s to=%s extra=%s",
+        action,
+        joint or '-',
+        '-' if from_angle is None else f"{float(from_angle):.2f}",
+        '-' if to_angle is None else f"{float(to_angle):.2f}",
+        extra or '-',
+    )
+
+
+def _force_gripper_neutral() -> None:
+    """
+    Durante calibración, la garra continua debe quedar neutral o detenida.
+    """
+    try:
+        c = obtener_cerebro()
+        c.robot.controlador_servo.detener_servo('gripper')
+    except Exception:
+        pass
+
+
+def _calibration_abort_requested() -> bool:
+    """
+    True cuando STOP/EMERGENCY pidió abortar inmediatamente el movimiento.
+    """
+    with _calibration_lock:
+        return bool(_calibration_state['stop_requested']) or _calibration_state['runtime'] == 'EMERGENCY'
+
+
+def _calibration_step(direction: int):
+    if direction not in (-1, 1):
+        return {'ok': False, 'msg': 'direction inválido (usar -1 o 1)'}
+
+    now_ms = int(time.time() * 1000)
+    with _calibration_lock:
+        if not _calibration_state['enabled']:
+            return {'ok': False, 'msg': 'Calibración no activa'}
+        if _calibration_state['runtime'] == 'EMERGENCY':
+            return {'ok': False, 'msg': 'Calibración en EMERGENCY. Resetea emergencia primero.'}
+        elapsed = now_ms - int(_calibration_state['last_cmd_ts_ms'])
+        if elapsed < CAL_COOLDOWN_MS:
+            return {'ok': False, 'msg': f'Cooldown activo ({elapsed} ms)'}
+        joint = str(_calibration_state['active_joint'])
+        _calibration_state['last_cmd_ts_ms'] = now_ms
+        _calibration_state['runtime'] = 'MOVING'
+        _calibration_state['stop_requested'] = False
+
+    if not _calibration_move_lock.acquire(blocking=False):
+        with _calibration_lock:
+            _calibration_state['runtime'] = 'STOPPED'
+        return {'ok': False, 'msg': 'Movimiento en curso. Rechazado por lock de calibración.'}
+
+    safe = obtener_safe_ctrl()
+    try:
+        # STOP/EMERGENCY recibido justo antes de tomar el lock de movimiento.
+        if _calibration_abort_requested():
+            with _calibration_lock:
+                _calibration_state['runtime'] = 'STOPPED'
+            return {'ok': False, 'msg': 'Movimiento abortado por STOP/EMERGENCY'}
+
+        if safe.is_emergency:
+            with _calibration_lock:
+                _calibration_state['runtime'] = 'EMERGENCY'
+            return {'ok': False, 'msg': 'SafeController en emergency stop.'}
+
+        current = safe.get_angle(joint)
+        target = current + direction * CAL_STEP_DEG
+        max_jump = CAL_MAX_JUMP.get(joint, 8.0)
+        if abs(target - current) > max_jump:
+            _calibration_event('CAL_STEP_REJECTED_JUMP', joint, current, target, f'max_jump={max_jump}')
+            with _calibration_lock:
+                _calibration_state['runtime'] = 'STOPPED'
+            return {'ok': False, 'msg': f'Salto rechazado por seguridad (>{max_jump}°)'}
+
+        # STOP/EMERGENCY antes de escribir PWM vía move_safe
+        if _calibration_abort_requested():
+            with _calibration_lock:
+                _calibration_state['runtime'] = 'STOPPED'
+            _calibration_event('CAL_STEP_ABORT_PRE_PWM', joint, current, target)
+            return {'ok': False, 'msg': 'Abortado antes de PWM por STOP/EMERGENCY'}
+
+        ok = safe.move_safe(joint, target)
+
+        # STOP/EMERGENCY mientras move_safe retornaba
+        if _calibration_abort_requested():
+            with _calibration_lock:
+                _calibration_state['runtime'] = 'STOPPED'
+            _calibration_event('CAL_STEP_ABORT_POST_MOVE', joint, current, safe.get_angle(joint))
+            return {'ok': False, 'msg': 'Abortado por STOP/EMERGENCY'}
+
+        time.sleep(CAL_STEP_DELAY_S)
+
+        # STOP/EMERGENCY después del delay de asentamiento
+        if _calibration_abort_requested():
+            with _calibration_lock:
+                _calibration_state['runtime'] = 'STOPPED'
+            _calibration_event('CAL_STEP_ABORT_POST_DELAY', joint, current, safe.get_angle(joint))
+            return {'ok': False, 'msg': 'Abortado tras delay por STOP/EMERGENCY'}
+
+        applied = safe.get_angle(joint)
+        _calibration_event('CAL_STEP', joint, current, applied, f'dir={direction}')
+
+        with _calibration_lock:
+            _calibration_state['runtime'] = 'IDLE'
+
+        if not ok:
+            return {'ok': False, 'msg': 'Movimiento rechazado por SafeController'}
+        return {'ok': True, 'msg': f'{joint}: {current:.1f}° -> {applied:.1f}°', 'angle': applied}
+    finally:
+        _calibration_move_lock.release()
 
 
 def iniciar_modo_autonomo(ciclos: int = 50) -> tuple:
@@ -254,12 +417,19 @@ def api_estado():
     estado['safe_emergency'] = safe.is_emergency
     estado['safe_simulation'] = safe.is_simulation
     estado['safe_angles'] = safe.get_all_angles()
+    with _calibration_lock:
+        estado['calibration_mode'] = bool(_calibration_state['enabled'])
+        estado['calibration_runtime'] = str(_calibration_state['runtime'])
+        estado['calibration_active_joint'] = str(_calibration_state['active_joint'])
+        estado['calibration_limits'] = json.loads(json.dumps(_calibration_state['limits']))
 
     return jsonify(estado)
 
 
 @app.route('/api/iniciar', methods=['POST'])
 def api_iniciar():
+    if _is_calibration_enabled():
+        return _calibration_blocked_response('/api/iniciar')
     ciclos = request.json.get('ciclos', 50) if request.is_json else 50
     ok, msg = iniciar_modo_autonomo(ciclos)
     return jsonify({'ok': ok, 'msg': msg})
@@ -267,6 +437,8 @@ def api_iniciar():
 
 @app.route('/api/pausar', methods=['POST'])
 def api_pausar():
+    if _is_calibration_enabled():
+        return _calibration_blocked_response('/api/pausar')
     obtener_cerebro().pausar()
     _anunciar_voz('Pausado.')
     return jsonify({'ok': True, 'msg': 'Pausado'})
@@ -274,6 +446,8 @@ def api_pausar():
 
 @app.route('/api/reanudar', methods=['POST'])
 def api_reanudar():
+    if _is_calibration_enabled():
+        return _calibration_blocked_response('/api/reanudar')
     obtener_cerebro().reanudar()
     _anunciar_voz('Reanudado.')
     return jsonify({'ok': True, 'msg': 'Reanudado'})
@@ -281,6 +455,8 @@ def api_reanudar():
 
 @app.route('/api/detener', methods=['POST'])
 def api_detener():
+    if _is_calibration_enabled():
+        return _calibration_blocked_response('/api/detener')
     c = obtener_cerebro()
     c.detener()
     c.robot.controlador_servo.detener_todos()
@@ -290,6 +466,8 @@ def api_detener():
 
 @app.route('/api/home', methods=['POST'])
 def api_home():
+    if _is_calibration_enabled():
+        return _calibration_blocked_response('/api/home')
     safe = obtener_safe_ctrl()
     if safe.is_emergency:
         return jsonify({'ok': False, 'msg': 'Emergency stop activo.'})
@@ -304,6 +482,8 @@ def api_home():
 
 @app.route('/api/escanear', methods=['POST'])
 def api_escanear():
+    if _is_calibration_enabled():
+        return _calibration_blocked_response('/api/escanear')
     c = obtener_cerebro()
     objs, recs = c._escanear_entorno()
     return jsonify({
@@ -315,6 +495,8 @@ def api_escanear():
 
 @app.route('/api/mover', methods=['POST'])
 def api_mover():
+    if _is_calibration_enabled():
+        return _calibration_blocked_response('/api/mover')
     """
     Control manual por ángulos relativos via SafeController.
     Cuerpo: {'joint': 'shoulder', 'dir': 1}
@@ -352,6 +534,22 @@ def api_mover():
         })
     hw_bus.HW_LOCK.release()
 
+    # Caso especial: garra continua 360 (legacy)
+    # La garra se controla por dirección/tiempo (abrir/cerrar), no por ángulo absoluto.
+    if joint == 'gripper':
+        try:
+            c = obtener_cerebro()
+            c.robot.controlador_servo.mover_por_tiempo('gripper', direccion, 0.25, velocidad=0.45)
+            return jsonify({
+                'ok': True,
+                'msg': f'gripper continuo movido dir={direccion:+d} (0.25s)'
+            })
+        except Exception as exc:
+            return jsonify({
+                'ok': False,
+                'msg': f'Error moviendo gripper continuo: {exc}'
+            })
+
     delta = direccion * PASO_MANUAL_DEG
     ok = safe.move_relative(joint, delta)
 
@@ -362,6 +560,90 @@ def api_mover():
         })
     else:
         return jsonify({'ok': False, 'msg': 'Movimiento rechazado por SafeController'})
+
+
+@app.route('/api/set_angle', methods=['POST'])
+def api_set_angle():
+    if _is_calibration_enabled():
+        return _calibration_blocked_response('/api/set_angle')
+    """
+    Control absoluto por ángulo (sliders) para articulaciones posicionales.
+    Cuerpo: {'joint': 'shoulder', 'angle': 92.0}
+    """
+    data = request.get_json() or {}
+    joint = str(data.get('joint', '')).strip().lower()
+
+    if joint not in {'base', 'shoulder', 'elbow', 'wrist'}:
+        return jsonify({'ok': False, 'msg': f'Joint no soportado para slider: {joint}'})
+
+    try:
+        angle = float(data.get('angle'))
+    except Exception:
+        return jsonify({'ok': False, 'msg': 'Ángulo inválido'})
+
+    safe = obtener_safe_ctrl()
+    if safe.is_emergency:
+        return jsonify({'ok': False, 'msg': 'Emergency stop activo. Reinicia antes de mover.'})
+
+    # El slider puede saltar varios grados en un solo evento.
+    # Para respetar el límite anti-salto del SafeController, aplicamos una rampa.
+    current = safe.get_angle(joint)
+    delta = angle - current
+    max_step = 10.0 if joint in {'shoulder', 'elbow'} else 15.0
+
+    if abs(delta) <= max_step:
+        ok = safe.move_safe(joint, angle)
+        if not ok:
+            return jsonify({'ok': False, 'msg': 'Movimiento rechazado por SafeController'})
+    else:
+        direction = 1.0 if delta > 0 else -1.0
+        steps = int(abs(delta) / max_step)
+        last_target = current
+        for _ in range(steps):
+            last_target += direction * max_step
+            if not safe.move_safe(joint, last_target):
+                return jsonify({'ok': False, 'msg': f'Movimiento rechazado en rampa ({joint})'})
+            # Rate limit de SafeController: 80 ms
+            time.sleep(0.09)
+        if abs(last_target - angle) > 1e-6:
+            if not safe.move_safe(joint, angle):
+                return jsonify({'ok': False, 'msg': f'Movimiento final rechazado ({joint})'})
+
+    applied = safe.get_angle(joint)
+    return jsonify({'ok': True, 'msg': f'{joint} => {applied:.1f}°', 'angle_applied': applied})
+
+
+@app.route('/api/gripper_continuo', methods=['POST'])
+def api_gripper_continuo():
+    if _is_calibration_enabled():
+        return _calibration_blocked_response('/api/gripper_continuo')
+    """
+    Control de garra continua 360 por velocidad.
+    Cuerpo: {'speed': -100..100}
+      speed > 0 : abrir
+      speed < 0 : cerrar
+      speed = 0 : detener
+    """
+    data = request.get_json() or {}
+    try:
+        speed = int(data.get('speed', 0))
+    except Exception:
+        return jsonify({'ok': False, 'msg': 'speed inválido'})
+
+    speed = max(-100, min(100, speed))
+    c = obtener_cerebro()
+
+    try:
+        if speed == 0:
+            c.robot.controlador_servo.detener_servo('gripper')
+            return jsonify({'ok': True, 'msg': 'gripper continuo detenido'})
+
+        direccion = 1 if speed > 0 else -1
+        velocidad = max(0.2, min(1.0, abs(speed) / 100.0))
+        c.robot.controlador_servo.mover_por_tiempo('gripper', direccion, 0.12, velocidad=velocidad)
+        return jsonify({'ok': True, 'msg': f'gripper continuo speed={speed}'})
+    except Exception as exc:
+        return jsonify({'ok': False, 'msg': f'Error en gripper continuo: {exc}'})
 
 
 @app.route('/api/emergencia', methods=['POST'])
@@ -398,12 +680,178 @@ def api_reset_emergency():
     if not safe.is_emergency:
         return jsonify({'ok': True, 'msg': 'No había emergency stop activo'})
     safe.reset_emergency()
+    with _calibration_lock:
+        if _calibration_state['enabled'] and _calibration_state['runtime'] == 'EMERGENCY':
+            # Reset manual explícito: salimos de EMERGENCY, pero quedamos en STOPPED
+            # para evitar reanudación accidental.
+            _calibration_state['runtime'] = 'STOPPED'
+            _calibration_state['stop_requested'] = False
     log.warning('[Web] Emergency stop reiniciado por operador desde /api/reset_emergency')
     return jsonify({'ok': True, 'msg': 'Emergency stop reiniciado. Verificar posición del brazo.'})
 
 
+@app.route('/api/calibration/enable', methods=['POST'])
+def api_calibration_enable():
+    with _calibration_lock:
+        _calibration_state['enabled'] = True
+        _calibration_state['runtime'] = 'IDLE'
+        _calibration_state['stop_requested'] = False
+        _calibration_state['last_cmd_ts_ms'] = 0
+    _force_gripper_neutral()
+    _calibration_event('CAL_ENABLE', extra='calibration_mode=True')
+    return jsonify({'ok': True, 'msg': 'Modo calibración seguro ACTIVADO'})
+
+
+@app.route('/api/calibration/disable', methods=['POST'])
+def api_calibration_disable():
+    with _calibration_lock:
+        _calibration_state['enabled'] = False
+        _calibration_state['runtime'] = 'IDLE'
+        _calibration_state['stop_requested'] = False
+    _force_gripper_neutral()
+    _calibration_event('CAL_DISABLE', extra='calibration_mode=False')
+    return jsonify({'ok': True, 'msg': 'Modo calibración seguro DESACTIVADO'})
+
+
+@app.route('/api/calibration/select_joint', methods=['POST'])
+def api_calibration_select_joint():
+    data = request.get_json() or {}
+    joint = str(data.get('joint', '')).strip().lower()
+    if joint not in CAL_JOINTS:
+        return jsonify({'ok': False, 'msg': f'Joint inválido: {joint}'})
+    with _calibration_lock:
+        if not _calibration_state['enabled']:
+            return jsonify({'ok': False, 'msg': 'Activa calibración primero'})
+        _calibration_state['active_joint'] = joint
+        _calibration_state['runtime'] = 'IDLE'
+    _calibration_event('CAL_SELECT_JOINT', joint=joint)
+    return jsonify({'ok': True, 'msg': f'Joint activo: {joint}'})
+
+
+@app.route('/api/calibration/step', methods=['POST'])
+def api_calibration_step():
+    data = request.get_json() or {}
+    try:
+        direction = int(data.get('dir', 0))
+    except Exception:
+        return jsonify({'ok': False, 'msg': 'dir inválido'})
+    out = _calibration_step(direction)
+    return jsonify(out), (200 if out.get('ok') else 409)
+
+
+@app.route('/api/calibration/stop', methods=['POST'])
+def api_calibration_stop():
+    with _calibration_lock:
+        _calibration_state['stop_requested'] = True
+        if _calibration_state['runtime'] != 'EMERGENCY':
+            _calibration_state['runtime'] = 'STOPPED'
+    _force_gripper_neutral()
+    _calibration_event('CAL_STOP')
+    return jsonify({'ok': True, 'msg': 'STOP de calibración aplicado'})
+
+
+@app.route('/api/calibration/emergency', methods=['POST'])
+def api_calibration_emergency():
+    with _calibration_lock:
+        _calibration_state['runtime'] = 'EMERGENCY'
+        _calibration_state['stop_requested'] = True
+    _force_gripper_neutral()
+    _calibration_event('CAL_EMERGENCY')
+    # Reusar emergencia global para máxima seguridad física.
+    return api_emergencia()
+
+
+@app.route('/api/calibration/save_min', methods=['POST'])
+def api_calibration_save_min():
+    safe = obtener_safe_ctrl()
+    with _calibration_lock:
+        if not _calibration_state['enabled']:
+            return jsonify({'ok': False, 'msg': 'Activa calibración primero'})
+        joint = _calibration_state['active_joint']
+    angle = safe.get_angle(joint)
+    with _calibration_lock:
+        _calibration_state['limits'][joint]['min'] = round(angle, 2)
+    _calibration_event('CAL_SAVE_MIN', joint=joint, to_angle=angle)
+    return jsonify({'ok': True, 'msg': f'MIN guardado {joint}={angle:.2f}°'})
+
+
+@app.route('/api/calibration/save_max', methods=['POST'])
+def api_calibration_save_max():
+    safe = obtener_safe_ctrl()
+    with _calibration_lock:
+        if not _calibration_state['enabled']:
+            return jsonify({'ok': False, 'msg': 'Activa calibración primero'})
+        joint = _calibration_state['active_joint']
+    angle = safe.get_angle(joint)
+    with _calibration_lock:
+        _calibration_state['limits'][joint]['max'] = round(angle, 2)
+    _calibration_event('CAL_SAVE_MAX', joint=joint, to_angle=angle)
+    return jsonify({'ok': True, 'msg': f'MAX guardado {joint}={angle:.2f}°'})
+
+
+@app.route('/api/calibration/commit', methods=['POST'])
+def api_calibration_commit():
+    with _calibration_lock:
+        limits_snapshot = json.loads(json.dumps(_calibration_state['limits']))
+
+    for joint in CAL_JOINTS:
+        lo = limits_snapshot[joint].get('min')
+        hi = limits_snapshot[joint].get('max')
+        if lo is None or hi is None:
+            return jsonify({'ok': False, 'msg': f'Falta MIN/MAX para {joint}'}), 400
+        if float(lo) >= float(hi):
+            return jsonify({'ok': False, 'msg': f'Rango inválido en {joint}: min>=max'}), 400
+
+    cfg_path = Path(__file__).resolve().parent / 'servo_config.json'
+    backup_path = cfg_path.with_name('servo_config.pre_calib.json')
+    tmp_path = cfg_path.with_suffix('.json.tmp')
+
+    try:
+        with cfg_path.open('r', encoding='utf-8') as f:
+            data = json.load(f)
+        with backup_path.open('w', encoding='utf-8') as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+
+        joints = data.get('joints', {})
+        for joint in CAL_JOINTS:
+            if joint not in joints:
+                return jsonify({'ok': False, 'msg': f'Joint no existe en servo_config: {joint}'}), 400
+            joints[joint]['angle_safe_min_deg'] = float(limits_snapshot[joint]['min'])
+            joints[joint]['angle_safe_max_deg'] = float(limits_snapshot[joint]['max'])
+            home = float(joints[joint].get('angle_home_deg', 90.0))
+            joints[joint]['angle_home_deg'] = max(
+                float(limits_snapshot[joint]['min']),
+                min(float(limits_snapshot[joint]['max']), home),
+            )
+
+        # Validación JSON + escritura atómica
+        payload = json.dumps(data, ensure_ascii=False, indent=2)
+        json.loads(payload)
+        with tmp_path.open('w', encoding='utf-8') as f:
+            f.write(payload)
+        os.replace(tmp_path, cfg_path)
+    except Exception as exc:
+        return jsonify({'ok': False, 'msg': f'Error commit calibración: {exc}'}), 500
+
+    _calibration_event('CAL_COMMIT', extra=f'backup={backup_path.name}')
+    return jsonify({
+        'ok': True,
+        'msg': f'Calibración guardada. Backup: {backup_path.name}',
+        'limits': limits_snapshot,
+    })
+
+
+@app.route('/api/calibration/state')
+def api_calibration_state():
+    with _calibration_lock:
+        snap = json.loads(json.dumps(_calibration_state))
+    return jsonify({'ok': True, 'calibration': snap})
+
+
 @app.route('/api/calibrar_servos', methods=['POST'])
 def api_calibrar_servos():
+    if _is_calibration_enabled():
+        return _calibration_blocked_response('/api/calibrar_servos')
     """Inicia la rutina de auto-calibracion de servos en un hilo."""
     global hilo_calibracion
     if hilo_calibracion and hilo_calibracion.is_alive():
@@ -433,6 +881,8 @@ def api_calibrar_servos():
 
 @app.route('/api/calibrar_color', methods=['POST'])
 def api_calibrar_color():
+    if _is_calibration_enabled():
+        return _calibration_blocked_response('/api/calibrar_color')
     """Calibra offsets HSV basandose en la iluminacion actual."""
     c = obtener_cerebro()
     if c.detector_color is None:
@@ -499,6 +949,7 @@ body{font-family:'Segoe UI',system-ui,sans-serif;background:#0f172a;color:#e2e8f
 .diag-pill.ok{background:#14532d;color:#bbf7d0}
 .diag-pill.bad{background:#7f1d1d;color:#fecaca}
 .diag-motivo{font-family:ui-monospace,monospace;color:#cbd5e1;word-break:break-all;max-width:100%}
+.cal-banner{display:none;margin-top:8px;padding:8px 12px;border:1px solid #ef4444;background:#7f1d1d;color:#fee2e2;border-radius:8px;font-size:.78rem;font-weight:700}
 .voz-nota{margin-top:8px;font-size:.72rem;color:#a78bfa;line-height:1.4;display:none}
 .voz-nota.warn{color:#fbbf24}
 .estado-badge{padding:4px 14px;border-radius:20px;font-size:.75rem;font-weight:600;text-transform:uppercase;letter-spacing:.5px}
@@ -547,6 +998,11 @@ body{font-family:'Segoe UI',system-ui,sans-serif;background:#0f172a;color:#e2e8f
 .manual-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:6px}
 .btn-sm{padding:8px 4px;font-size:.75rem;border:none;border-radius:6px;cursor:pointer;background:#334155;color:#e2e8f0;font-weight:600}
 .btn-sm:hover{background:#475569}
+.slider-wrap{display:grid;gap:8px;margin-top:8px}
+.slider-row{display:grid;grid-template-columns:72px 1fr 56px;align-items:center;gap:8px}
+.slider-row label{font-size:.75rem;color:#cbd5e1;font-weight:600}
+.slider-row input[type=range]{width:100%}
+.slider-val{font-size:.74rem;color:#38bdf8;font-weight:700;text-align:right}
 .pos-bar-container{margin-top:4px}
 .pos-row{display:flex;align-items:center;gap:8px;margin-bottom:6px;font-size:.75rem}
 .pos-label{width:65px;text-align:right;color:#94a3b8;font-weight:600}
@@ -581,6 +1037,7 @@ body{font-family:'Segoe UI',system-ui,sans-serif;background:#0f172a;color:#e2e8f
     <span>Ultimo escaneo: <span class="diag-pill ok" id="diag-escaneo-ok">—</span></span>
     <span class="diag-motivo" id="diag-escaneo-motivo" title="Motivo interno del ultimo escaneo">—</span>
   </div>
+  <div class="cal-banner" id="cal-banner">MODO CALIBRACIÓN ACTIVO — Controles legacy y autonomía bloqueados.</div>
   <p class="voz-nota" id="voz-nota-ok">Voz habilitada en configuracion: reconocimiento por <strong>Google</strong> (requiere <strong>Internet</strong>) y microfono USB bien configurado. Ver HARDWARE_AUDIO.md.</p>
   <p class="voz-nota warn" id="voz-nota-warn" style="display:none">Voz activada en config pero el asistente no arranco: revisa <code>pip install -r requirements-voice.txt</code> y el microfono.</p>
 </div>
@@ -590,7 +1047,7 @@ body{font-family:'Segoe UI',system-ui,sans-serif;background:#0f172a;color:#e2e8f
     <div class="video-panel">
       <img id="video" src="/video_feed" alt="Video en vivo">
     </div>
-    <div class="card" style="margin-top:12px">
+    <div class="card" style="margin-top:12px" id="legacy-manual-card">
       <h3>Control Manual Rapido</h3>
       <div class="manual-grid">
         <button class="btn-sm" onclick="manualMove('shoulder',1)">Hombro +</button>
@@ -607,6 +1064,67 @@ body{font-family:'Segoe UI',system-ui,sans-serif;background:#0f172a;color:#e2e8f
         <button class="btn-sm" style="background:#0e7490" onclick="moverBase(1)">Base Der</button>
       </div>
     </div>
+    <div class="card" style="margin-top:12px" id="legacy-slider-card">
+      <h3>Modo Calibracion Segura</h3>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:8px">
+        <button class="btn-sm" style="background:#065f46" onclick="apiPost('/api/calibration/enable')">Calibracion ON</button>
+        <button class="btn-sm" style="background:#334155" onclick="apiPost('/api/calibration/disable')">Calibracion OFF</button>
+        <button class="btn-sm" style="background:#991b1b" onclick="apiPost('/api/calibration/stop')">STOP</button>
+        <button class="btn-sm" style="background:#b91c1c" onclick="apiPost('/api/calibration/emergency')">EMERGENCY</button>
+      </div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:8px">
+        <button class="btn-sm" onclick="calibSelect('base')">Joint: Base</button>
+        <button class="btn-sm" onclick="calibSelect('shoulder')">Joint: Hombro</button>
+        <button class="btn-sm" onclick="calibSelect('elbow')">Joint: Codo</button>
+        <button class="btn-sm" onclick="calibSelect('wrist')">Joint: Muneca</button>
+      </div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:8px">
+        <button class="btn-sm" style="background:#0f766e" onclick="calibStep(-1)">-1°</button>
+        <button class="btn-sm" style="background:#0f766e" onclick="calibStep(1)">+1°</button>
+        <button class="btn-sm" style="background:#a16207" onclick="apiPost('/api/calibration/save_min')">Guardar MIN</button>
+        <button class="btn-sm" style="background:#a16207" onclick="apiPost('/api/calibration/save_max')">Guardar MAX</button>
+        <button class="btn-sm" style="background:#7c3aed" onclick="apiPost('/api/calibration/commit')">Commit Limites</button>
+      </div>
+      <div style="font-size:.76rem;color:#cbd5e1;line-height:1.45">
+        <div>Estado: <strong id="cal-mode">OFF</strong> · Runtime: <strong id="cal-runtime">IDLE</strong></div>
+        <div>Joint activo: <strong id="cal-joint">shoulder</strong></div>
+      </div>
+    </div>
+    <div class="card" style="margin-top:12px">
+      <h3>Control por Barras (Tiempo Real)</h3>
+      <div class="slider-wrap">
+        <div class="slider-row">
+          <label for="sl-base">Base</label>
+          <input id="sl-base" type="range" min="0" max="180" step="1" value="90"
+                 oninput="sliderMoveJoint('base', this.value)">
+          <span class="slider-val" id="slv-base">90°</span>
+        </div>
+        <div class="slider-row">
+          <label for="sl-shoulder">Hombro</label>
+          <input id="sl-shoulder" type="range" min="15" max="165" step="1" value="90"
+                 oninput="sliderMoveJoint('shoulder', this.value)">
+          <span class="slider-val" id="slv-shoulder">90°</span>
+        </div>
+        <div class="slider-row">
+          <label for="sl-elbow">Codo</label>
+          <input id="sl-elbow" type="range" min="20" max="160" step="1" value="90"
+                 oninput="sliderMoveJoint('elbow', this.value)">
+          <span class="slider-val" id="slv-elbow">90°</span>
+        </div>
+        <div class="slider-row">
+          <label for="sl-wrist">Muneca</label>
+          <input id="sl-wrist" type="range" min="20" max="170" step="1" value="90"
+                 oninput="sliderMoveJoint('wrist', this.value)">
+          <span class="slider-val" id="slv-wrist">90°</span>
+        </div>
+        <div class="slider-row">
+          <label for="sl-gripper">Pinza 360</label>
+          <input id="sl-gripper" type="range" min="-100" max="100" step="1" value="0"
+                 oninput="sliderMoveGripper(this.value)" onchange="sliderStopGripper()">
+          <span class="slider-val" id="slv-gripper">0%</span>
+        </div>
+      </div>
+    </div>
     <div class="card" style="margin-top:12px">
       <h3>Posicion Estimada</h3>
       <div class="pos-bar-container" id="pos-bars">
@@ -619,7 +1137,7 @@ body{font-family:'Segoe UI',system-ui,sans-serif;background:#0f172a;color:#e2e8f
   </div>
 
   <div class="side">
-    <div class="card">
+    <div class="card" id="legacy-autonomy-card">
       <h3>Controles</h3>
       <div class="btn-grid">
         <button class="btn btn-start" onclick="apiPost('/api/iniciar')">Iniciar</button>
@@ -725,6 +1243,7 @@ body{font-family:'Segoe UI',system-ui,sans-serif;background:#0f172a;color:#e2e8f
 </div>
 
 <script>
+let CAL_MODE_ACTIVE = false;
 const CHECKLIST_STORAGE_KEY = 'brazo_checklist_v1';
 function checklistLoad(){
   try { return JSON.parse(localStorage.getItem(CHECKLIST_STORAGE_KEY) || '{}'); } catch(e){ return {}; }
@@ -766,10 +1285,67 @@ function apiPost(url, body){
   .then(r=>r.json()).then(d=>{if(d.msg)console.log(d.msg)}).catch(e=>console.error(e));
 }
 function manualMove(joint,dir){
+  if(CAL_MODE_ACTIVE) return;
   apiPost('/api/mover',{joint,dir});
 }
 function moverBase(dir){
+  if(CAL_MODE_ACTIVE) return;
   apiPost('/api/mover',{joint:'base',dir});
+}
+function calibSelect(joint){
+  apiPost('/api/calibration/select_joint',{joint});
+}
+function calibStep(dir){
+  apiPost('/api/calibration/step',{dir});
+}
+const _sliderTimers = {};
+function _debounceByKey(key, fn, ms){
+  if(_sliderTimers[key]) clearTimeout(_sliderTimers[key]);
+  _sliderTimers[key]=setTimeout(fn, ms);
+}
+function sliderMoveJoint(joint, value){
+  if(CAL_MODE_ACTIVE) return;
+  const v=Math.round(Number(value)||0);
+  const lbl=document.getElementById('slv-'+joint);
+  if(lbl) lbl.textContent=v+'°';
+  _debounceByKey('joint-'+joint, ()=>apiPost('/api/set_angle',{joint,angle:v}), 70);
+}
+function sliderMoveGripper(value){
+  if(CAL_MODE_ACTIVE) return;
+  const v=Math.round(Number(value)||0);
+  const lbl=document.getElementById('slv-gripper');
+  if(lbl) lbl.textContent=v+'%';
+  _debounceByKey('gripper-speed', ()=>apiPost('/api/gripper_continuo',{speed:v}), 70);
+}
+function sliderStopGripper(){
+  if(CAL_MODE_ACTIVE) return;
+  const sl=document.getElementById('sl-gripper');
+  const lbl=document.getElementById('slv-gripper');
+  if(sl) sl.value = 0;
+  if(lbl) lbl.textContent='0%';
+  apiPost('/api/gripper_continuo',{speed:0});
+}
+function setLegacyUiDisabled(disabled){
+  const banner=document.getElementById('cal-banner');
+  if(banner) banner.style.display = disabled ? 'block' : 'none';
+
+  // Bloquear controles legacy para evitar confusión operacional.
+  document.querySelectorAll('#legacy-manual-card button').forEach(el=>{
+    el.disabled = disabled;
+    el.style.opacity = disabled ? '0.45' : '1';
+    el.style.pointerEvents = disabled ? 'none' : 'auto';
+  });
+  document.querySelectorAll('#legacy-slider-card input, #legacy-slider-card button').forEach(el=>{
+    el.disabled = disabled;
+    el.style.opacity = disabled ? '0.45' : '1';
+    el.style.pointerEvents = disabled ? 'none' : 'auto';
+  });
+  // Controles autónomos/macros legacy bloqueados en calibración.
+  document.querySelectorAll('#legacy-autonomy-card .btn-grid .btn').forEach(el=>{
+    el.disabled = disabled;
+    el.style.opacity = disabled ? '0.45' : '1';
+    el.style.pointerEvents = disabled ? 'none' : 'auto';
+  });
 }
 function resetEmergencia(){
   if(!confirm('¿Confirmas que el brazo está en posición segura y es seguro reanudar?'))return;
@@ -819,17 +1395,40 @@ function actualizarUI(){
     document.getElementById('st-ciclos').textContent=s.ciclos_completados;
 
     if(d.posiciones){
+      const servoRangeDeg={shoulder:270,elbow:270,wrist:180,gripper:360};
       ['shoulder','elbow','wrist','gripper'].forEach(j=>{
         const v=d.posiciones[j];
         if(v!==undefined){
           const pct=Math.round(v*100);
+          const deg=Math.round(v*(servoRangeDeg[j]||180));
           const bar=document.getElementById('pos-'+j);
           const lbl=document.getElementById('pv-'+j);
           if(bar)bar.style.width=pct+'%';
-          if(lbl)lbl.textContent=pct+'%';
+          if(lbl)lbl.textContent=(j==='gripper')?(deg+'° (cont)'):(deg+'°');
         }
       });
     }
+    if(d.safe_angles){
+      ['base','shoulder','elbow','wrist'].forEach(j=>{
+        const av=d.safe_angles[j];
+        if(av===undefined) return;
+        const slider=document.getElementById('sl-'+j);
+        const lbl=document.getElementById('slv-'+j);
+        if(slider && document.activeElement !== slider){
+          const sv=Math.round(av);
+          slider.value=sv;
+          if(lbl) lbl.textContent=sv+'°';
+        }
+      });
+    }
+    const calMode=document.getElementById('cal-mode');
+    const calRun=document.getElementById('cal-runtime');
+    const calJoint=document.getElementById('cal-joint');
+    CAL_MODE_ACTIVE = !!d.calibration_mode;
+    setLegacyUiDisabled(CAL_MODE_ACTIVE);
+    if(calMode) calMode.textContent=d.calibration_mode?'ON':'OFF';
+    if(calRun) calRun.textContent=d.calibration_runtime||'IDLE';
+    if(calJoint) calJoint.textContent=d.calibration_active_joint||'-';
 
     if(d.calibracion && d.calibracion.activo){
       document.getElementById('calib-status').textContent='Calibrando: '+d.calibracion.servo+' ('+d.calibracion.fase+')';
