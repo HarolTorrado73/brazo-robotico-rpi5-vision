@@ -117,6 +117,10 @@ class ControladorServo:
                     config = json.load(f)
                     pulsos = {}
                     for nombre, datos in config.items():
+                        # Ignora metadatos/globales que no son bloques de articulación
+                        # (ej: "_comment": "...") para evitar errores tipo "'str' has no attribute 'get'".
+                        if not isinstance(datos, dict):
+                            continue
                         dfl = default_config.get(nombre, {})
                         t_pos_keys = ['tiempo_max_arriba', 'tiempo_max_extender',
                                       'tiempo_max_horario', 'tiempo_max_abrir',

@@ -110,6 +110,12 @@ class CerebroAutonomo:
         self.camara = None
         self.detector_yolo = None
         self.detector_color = None
+        # Permite desactivar cámara en runtime para evitar caídas por CSI/libcamera
+        # cuando el cable/sensor está inestable.
+        self._camera_disabled_runtime = os.getenv("BR_DISABLE_CAMERA", "0") == "1"
+        # Desactiva TODO el stack de visión (cámara + detector + color) en runtime.
+        # Útil cuando hay segfault en librerías nativas (cv2/libcamera/torch).
+        self._vision_disabled_runtime = os.getenv("BR_DISABLE_VISION", "0") == "1"
 
         self.objetos = []
         self.recipientes = []
@@ -145,27 +151,32 @@ class CerebroAutonomo:
             log.error(f"Error inicializando controlador: {e}")
             raise
 
-        if CAMARA_HABILITADA:
+        if self._vision_disabled_runtime:
+            log.warning("Vision desactivada por BR_DISABLE_VISION=1 (modo solo control).")
+        elif CAMARA_HABILITADA and not self._camera_disabled_runtime:
             try:
                 from perception.vision.camera.main import CameraManager
                 self.camara = CameraManager()
                 log.info("Camara OK")
             except Exception as e:
                 log.warning(f"Camara no disponible: {e} -- modo sin vision")
+        elif self._camera_disabled_runtime:
+            log.warning("Camara desactivada por BR_DISABLE_CAMERA=1 (modo sin vision).")
 
-        try:
-            from perception.vision.detection.main import DetectionModel
-            self.detector_yolo = DetectionModel()
-            log.info("YOLO OK")
-        except Exception as e:
-            log.warning(f"YOLO no disponible: {e}")
+        if not self._vision_disabled_runtime:
+            try:
+                from perception.vision.detection.main import DetectionModel
+                self.detector_yolo = DetectionModel()
+                log.info("YOLO OK")
+            except Exception as e:
+                log.warning(f"YOLO no disponible: {e}")
 
-        try:
-            from perception.vision.color_detector import DetectorColor
-            self.detector_color = DetectorColor()
-            log.info("Detector de color OK")
-        except Exception as e:
-            log.warning(f"Detector de color no disponible: {e}")
+            try:
+                from perception.vision.color_detector import DetectorColor
+                self.detector_color = DetectorColor()
+                log.info("Detector de color OK")
+            except Exception as e:
+                log.warning(f"Detector de color no disponible: {e}")
 
     # ------------------------------------------------------------------
     # CICLO PRINCIPAL
