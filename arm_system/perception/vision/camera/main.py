@@ -128,7 +128,8 @@ class CameraManager:
             log.error(f"CAMARA: Error {e}")
             return None, None
 
-    def _captura_still(self):
+    def _captura_still(self, timeout_s=3.0):
+        """Captura rápida para streaming (timeout corto, sin almacenamiento)."""
         temp = "/tmp/brazo_capture.jpg"
         try:
             if os.path.exists(temp):
@@ -136,9 +137,9 @@ class CameraManager:
         except OSError:
             pass
         try:
-            cmd = [self._cmd_captura, '-o', temp, '-n',
+            cmd = [self._cmd_captura, '-o', temp, '-n', '--immediate',
                    '--width', str(self.width), '--height', str(self.height)]
-            subprocess.run(cmd, capture_output=True, timeout=15)
+            subprocess.run(cmd, capture_output=True, timeout=timeout_s)
             if os.path.exists(temp):
                 img = cv2.imread(temp)
                 try:
@@ -147,7 +148,7 @@ class CameraManager:
                     pass
                 return img
         except subprocess.TimeoutExpired:
-            log.warning("CAMARA: rpicam-still timeout")
+            log.warning(f"CAMARA: rpicam-still timeout ({timeout_s}s)")
         return None
 
     def __del__(self):

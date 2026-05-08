@@ -49,14 +49,14 @@
     "pulso_max": 2000,
     "pulso_neutral": 1500,
     "pulso_hold": 1500,
-    "pulso_abrir": 0,
-    "pulso_cerrar": 0,
-    "rango_pulso": 350,
+    "pulso_abrir": 1400,
+    "pulso_cerrar": 1600,
+    "rango_pulso": 100,
     "velocidad_min": 0.2,
     "invertido": false,
-    "tiempo_max_abrir": 1.2,
-    "tiempo_max_cerrar": 1.2,
-    "notas": "MG996R continuo 360 en garra: abrir/cerrar por direccion/tiempo alrededor de pulso_neutral."
+    "tiempo_max_abrir": 2.0,
+    "tiempo_max_cerrar": 2.0,
+    "notas": "MG996R continuo 360 en garra: abrir/cerrar por direccion/tiempo con pulso calibrado 1400/1600."
   },
   "base": {
     "canal": 4,

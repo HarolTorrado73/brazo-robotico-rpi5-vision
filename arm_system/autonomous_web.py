@@ -361,34 +361,60 @@ def _registrar_voz_si_habilitada() -> None:
 # ------------------------------------------------------------------ #
 
 def generar_frames():
-    """Genera frames MJPEG continuos desde la camara."""
+    """Genera frames MJPEG continuos desde la cámara con streaming rápido."""
     import cv2
     c = obtener_cerebro()
+    frame_count = 0
+    error_count = 0
+    max_errors = 5
+    
     while True:
         try:
+            if c.camara is None:
+                log.warning("[Video] Cámara no inicializada, reintentando...")
+                time.sleep(2)
+                continue
+                
             img = c._capturar_imagen()
             if img is not None:
                 c.frame_actual = img.copy()
+                error_count = 0  # Reset error counter on success
+                frame_count += 1
 
-                if c.detector_color:
-                    objs_draw = [{'bbox': o.bbox, 'color': o.color,
-                                  'clase': o.clase, 'confianza': o.confianza}
-                                 for o in c.objetos] if c.objetos else []
-                    recs_draw = [{'bbox': r.bbox, 'color': r.color,
-                                  'centro': r.centro}
-                                 for r in c.recipientes] if c.recipientes else []
-                    if objs_draw or recs_draw:
-                        img = c.detector_color.dibujar_resultados(img, objs_draw, recs_draw)
+                # Dibuja detecciones si están disponibles
+                if c.detector_color and (c.objetos or c.recipientes):
+                    try:
+                        objs_draw = [{'bbox': o.bbox, 'color': o.color,
+                                      'clase': o.clase, 'confianza': o.confianza}
+                                     for o in c.objetos] if c.objetos else []
+                        recs_draw = [{'bbox': r.bbox, 'color': r.color,
+                                      'centro': r.centro}
+                                     for r in c.recipientes] if c.recipientes else []
+                        if objs_draw or recs_draw:
+                            img = c.detector_color.dibujar_resultados(img, objs_draw, recs_draw)
+                    except Exception as e:
+                        log.debug(f"[Video] Error dibujando detecciones: {e}")
 
-                _, buffer = cv2.imencode('.jpg', img, [cv2.IMWRITE_JPEG_QUALITY, 70])
+                # Añade número de frame al corner inferior derecho
+                cv2.putText(img, f"Frame: {frame_count}", (10, img.shape[0] - 10),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
+
+                _, buffer = cv2.imencode('.jpg', img, [cv2.IMWRITE_JPEG_QUALITY, 75])
                 yield (b'--frame\r\n'
                        b'Content-Type: image/jpeg\r\n\r\n' + buffer.tobytes() + b'\r\n')
+                time.sleep(0.08)  # ~12 FPS para streaming suave
             else:
-                time.sleep(1)
-        except Exception:
+                error_count += 1
+                if error_count > max_errors:
+                    log.error(f"[Video] Demasiados errores capturando imagen ({error_count}). Pausa.")
+                    time.sleep(3)
+                    error_count = 0
+                else:
+                    time.sleep(0.5)
+        except Exception as e:
+            log.error(f"[Video] Error en generar_frames: {e}")
+            error_count += 1
             time.sleep(1)
-
-        time.sleep(0.15)
 
 
 # ------------------------------------------------------------------ #
@@ -937,41 +963,40 @@ HTML = """
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Brazo Robotico Autonomo</title>
+<title>Brazo Robótico Autónomo - Control IA</title>
 <style>
 *{box-sizing:border-box;margin:0;padding:0}
-body{font-family:'Segoe UI',system-ui,sans-serif;background:#0f172a;color:#e2e8f0;min-height:100vh}
-.top-bar{background:linear-gradient(135deg,#1e3a5f,#0f172a);padding:12px 24px 14px;border-bottom:1px solid #334155}
-.top-bar-row{display:flex;align-items:center;gap:16px;flex-wrap:wrap}
-.top-bar h1{font-size:1.4rem;font-weight:700;background:linear-gradient(90deg,#38bdf8,#818cf8);-webkit-background-clip:text;-webkit-text-fill-color:transparent}
-.top-bar-diag{margin-top:10px;padding-top:10px;border-top:1px solid #334155;display:flex;flex-wrap:wrap;align-items:center;gap:10px 16px;font-size:.78rem;color:#94a3b8}
-.diag-pill{padding:2px 10px;border-radius:12px;font-weight:700;font-size:.72rem}
+body{font-family:'Inter','Segoe UI',system-ui,sans-serif;background:linear-gradient(135deg,#0f172a 0%,#1a1f3a 100%);color:#e2e8f0;min-height:100vh}
+html{scroll-behavior:smooth}
+
+@keyframes fadeIn{from{opacity:0;transform:translateY(10px)}to{opacity:1;transform:translateY(0)}}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:.7}}
+@keyframes glow{0%,100%{box-shadow:0 0 20px rgba(56,189,248,.1)}50%{box-shadow:0 0 30px rgba(56,189,248,.3)}}
+@keyframes slideDown{from{opacity:0;transform:translateY(-10px)}to{opacity:1;transform:translateY(0)}}
+
+.anim-fadeIn{animation:fadeIn .4s ease-out}
+.anim-glow{animation:glow 2s infinite}
+.anim-pulse{animation:pulse 2s infinite}
+.top-bar{background:linear-gradient(135deg,#1e293b 0%,#0f172a 100%);padding:20px 32px;border-bottom:2px solid rgba(56,189,248,.2);box-shadow:0 8px 32px rgba(0,0,0,.3)}
+.top-bar h1{font-size:1.8rem;font-weight:800;background:linear-gradient(90deg,#38bdf8,#a78bfa);-webkit-background-clip:text;-webkit-text-fill-color:transparent;margin-bottom:8px}
+.top-bar-row{display:flex;align-items:center;justify-content:space-between;gap:20px}
+.estado-badge{padding:6px 16px;border-radius:20px;font-size:.75rem;font-weight:700;text-transform:uppercase;letter-spacing:.6px;background:rgba(56,189,248,.15);color:#38bdf8;border:1px solid rgba(56,189,248,.3)}
+.top-bar-diag{margin-top:12px;padding-top:12px;border-top:1px solid rgba(56,189,248,.1);display:flex;gap:16px;font-size:.75rem;color:#cbd5e1}
+.diag-pill{padding:4px 12px;border-radius:12px;font-weight:700;font-size:.7rem}
 .diag-pill.ok{background:#14532d;color:#bbf7d0}
 .diag-pill.bad{background:#7f1d1d;color:#fecaca}
-.diag-motivo{font-family:ui-monospace,monospace;color:#cbd5e1;word-break:break-all;max-width:100%}
-.cal-banner{display:none;margin-top:8px;padding:8px 12px;border:1px solid #ef4444;background:#7f1d1d;color:#fee2e2;border-radius:8px;font-size:.78rem;font-weight:700}
-.voz-nota{margin-top:8px;font-size:.72rem;color:#a78bfa;line-height:1.4;display:none}
-.voz-nota.warn{color:#fbbf24}
-.estado-badge{padding:4px 14px;border-radius:20px;font-size:.75rem;font-weight:600;text-transform:uppercase;letter-spacing:.5px}
-.estado-IDLE{background:#334155;color:#94a3b8}
-.estado-ESCANEANDO{background:#0369a1;color:#e0f2fe}
-.estado-VISION_FALLA{background:#b91c1c;color:#fee2e2}
-.estado-PLANIFICANDO{background:#7c3aed;color:#ede9fe}
-.estado-RECOGIENDO{background:#ea580c;color:#fff7ed}
-.estado-TRANSPORTANDO{background:#0891b2;color:#ecfeff}
-.estado-DEPOSITANDO{background:#16a34a;color:#f0fdf4}
-.estado-RECUPERANDO_ERROR{background:#dc2626;color:#fef2f2}
-.estado-PAUSADO{background:#ca8a04;color:#fefce8}
-.estado-COMPLETADO{background:#059669;color:#ecfdf5}
-.main{display:grid;grid-template-columns:1fr 380px;gap:16px;padding:16px;max-width:1400px;margin:0 auto}
-@media(max-width:900px){.main{grid-template-columns:1fr}}
-.video-panel{background:#1e293b;border-radius:12px;overflow:hidden;border:1px solid #334155}
-.video-panel img{width:100%;display:block;min-height:300px;background:#000}
-.side{display:flex;flex-direction:column;gap:12px}
-.card{background:#1e293b;border-radius:12px;padding:16px;border:1px solid #334155}
-.card h3{font-size:.85rem;text-transform:uppercase;letter-spacing:.8px;color:#64748b;margin-bottom:10px}
-.btn-grid{display:grid;grid-template-columns:1fr 1fr;gap:8px}
-.btn{padding:10px;border:none;border-radius:8px;font-weight:600;font-size:.85rem;cursor:pointer;transition:all .2s}
+.cal-banner{display:none;margin-top:12px;padding:12px 16px;border:1px solid #ef4444;background:rgba(239,68,68,.1);color:#fca5a5;border-radius:8px;font-size:.8rem;font-weight:700}
+.main{display:grid;grid-template-columns:1fr 420px;gap:20px;padding:20px 32px;max-width:1600px;margin:0 auto}
+@media(max-width:1200px){.main{grid-template-columns:1fr;gap:16px}}
+.video-section{background:rgba(30,41,59,.6);border-radius:16px;overflow:hidden;border:1px solid rgba(56,189,248,.15);box-shadow:0 8px 32px rgba(56,189,248,.05);animation:fadeIn .6s ease-out}
+.video-panel img{width:100%;display:block;min-height:400px;background:#000;object-fit:cover}
+.controls-grid{display:grid;gap:16px}
+.side{display:flex;flex-direction:column;gap:16px}
+.card{background:rgba(30,41,59,.6);border-radius:16px;padding:20px;border:1px solid rgba(56,189,248,.1);backdrop-filter:blur(10px);transition:all .3s}
+.card:hover{border-color:rgba(56,189,248,.3);box-shadow:0 8px 32px rgba(56,189,248,.1)}
+.card h3{font-size:.8rem;text-transform:uppercase;letter-spacing:.8px;color:#a78bfa;margin-bottom:12px;font-weight:700}
+.btn-grid{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+.btn{padding:12px;border:none;border-radius:10px;font-weight:700;font-size:.85rem;cursor:pointer;transition:all .3s;position:relative;overflow:hidden}
 .btn:active{transform:scale(.96)}
 .btn-start{background:linear-gradient(135deg,#22c55e,#16a34a);color:#fff}
 .btn-pause{background:linear-gradient(135deg,#f59e0b,#d97706);color:#fff}
@@ -1028,21 +1053,264 @@ body{font-family:'Segoe UI',system-ui,sans-serif;background:#0f172a;color:#e2e8f
 </head>
 <body>
 
-<div class="top-bar">
+<div class="top-bar anim-fadeIn">
   <div class="top-bar-row">
-    <h1>Brazo Robotico Autonomo</h1>
-    <span class="estado-badge estado-IDLE" id="badge-estado">IDLE</span>
+    <div>
+      <h1>⚙️ BRAZO ROBÓTICO IA</h1>
+      <p style="font-size:.8rem;color:#94a3b8;margin:4px 0 0">Control en tiempo real con detección visual</p>
+    </div>
+    <span class="estado-badge" id="badge-estado">IDLE</span>
   </div>
   <div class="top-bar-diag">
-    <span>Ultimo escaneo: <span class="diag-pill ok" id="diag-escaneo-ok">—</span></span>
-    <span class="diag-motivo" id="diag-escaneo-motivo" title="Motivo interno del ultimo escaneo">—</span>
+    <span>Cámara: <span class="diag-pill ok" id="diag-escaneo-ok">—</span></span>
+    <span id="diag-escaneo-motivo" title="Estado último escaneo" style="font-size:.7rem;color:#cbd5e1">—</span>
   </div>
-  <div class="cal-banner" id="cal-banner">MODO CALIBRACIÓN ACTIVO — Controles legacy y autonomía bloqueados.</div>
-  <p class="voz-nota" id="voz-nota-ok">Voz habilitada en configuracion: reconocimiento por <strong>Google</strong> (requiere <strong>Internet</strong>) y microfono USB bien configurado. Ver HARDWARE_AUDIO.md.</p>
-  <p class="voz-nota warn" id="voz-nota-warn" style="display:none">Voz activada en config pero el asistente no arranco: revisa <code>pip install -r requirements-voice.txt</code> y el microfono.</p>
+  <div class="cal-banner" id="cal-banner">🔒 MODO CALIBRACIÓN ACTIVO — Movimiento bloqueado</div>
 </div>
 
 <div class="main">
+  <div class="controls-grid">
+    <div class="video-section">
+      <img id="video" src="/video_feed" alt="Stream de cámara en vivo">
+    </div>
+
+    <div class="card anim-fadeIn">
+      <h3>📊 Estado del Brazo</h3>
+      <svg viewBox="0 0 300 320" style="width:100%;height:auto;min-height:200px">
+        <circle cx="150" cy="280" r="15" fill="#38bdf8" opacity=".3"/>
+        <circle cx="150" cy="280" r="12" fill="#38bdf8"/>
+        <text x="150" y="305" text-anchor="middle" font-size="12" fill="#cbd5e1">Base</text>
+        <line x1="150" y1="280" x2="150" y2="210" stroke="#818cf8" stroke-width="8" stroke-linecap="round"/>
+        <circle cx="150" cy="210" r="10" fill="#818cf8"/>
+        <text x="120" y="215" font-size="11" fill="#a78bfa">Hombro</text>
+        <line x1="150" y1="210" x2="180" y2="130" stroke="#a78bfa" stroke-width="8" stroke-linecap="round"/>
+        <circle cx="180" cy="130" r="10" fill="#a78bfa"/>
+        <text x="195" y="135" font-size="11" fill="#cbd5e1">Codo</text>
+        <line x1="180" y1="130" x2="200" y2="60" stroke="#c4b5fd" stroke-width="6" stroke-linecap="round"/>
+        <circle cx="200" cy="60" r="8" fill="#c4b5fd"/>
+        <line x1="200" y1="60" x2="210" y2="40" stroke="#e9d5ff" stroke-width="4" stroke-linecap="round"/>
+        <circle cx="210" cy="40" r="6" fill="#e9d5ff"/>
+        <text x="215" y="45" font-size="10" fill="#cbd5e1">Pinza</text>
+      </svg>
+      <div id="pos-bars" style="margin-top:12px;display:grid;gap:8px">
+        <div style="display:grid;grid-template-columns:80px 1fr 50px;align-items:center;gap:8px">
+          <span style="font-size:.75rem;font-weight:600;color:#818cf8">Hombro</span>
+          <div style="height:6px;background:rgba(56,189,248,.2);border-radius:3px;overflow:hidden">
+            <div id="pos-shoulder" style="height:100%;background:linear-gradient(90deg,#38bdf8,#818cf8);width:50%;transition:width .3s"></div>
+          </div>
+          <span id="pv-shoulder" style="font-size:.7rem;font-weight:700;color:#38bdf8;text-align:right">90°</span>
+        </div>
+        <div style="display:grid;grid-template-columns:80px 1fr 50px;align-items:center;gap:8px">
+          <span style="font-size:.75rem;font-weight:600;color:#a78bfa">Codo</span>
+          <div style="height:6px;background:rgba(167,139,250,.2);border-radius:3px;overflow:hidden">
+            <div id="pos-elbow" style="height:100%;background:linear-gradient(90deg,#a78bfa,#c4b5fd);width:50%;transition:width .3s"></div>
+          </div>
+          <span id="pv-elbow" style="font-size:.7rem;font-weight:700;color:#a78bfa;text-align:right">90°</span>
+        </div>
+        <div style="display:grid;grid-template-columns:80px 1fr 50px;align-items:center;gap:8px">
+          <span style="font-size:.75rem;font-weight:600;color:#c4b5fd">Muñeca</span>
+          <div style="height:6px;background:rgba(196,181,253,.2);border-radius:3px;overflow:hidden">
+            <div id="pos-wrist" style="height:100%;background:linear-gradient(90deg,#c4b5fd,#e9d5ff);width:50%;transition:width .3s"></div>
+          </div>
+          <span id="pv-wrist" style="font-size:.7rem;font-weight:700;color:#c4b5fd;text-align:right">90°</span>
+        </div>
+      </div>
+    </div>
+
+    <div class="card anim-fadeIn">
+      <h3>🎮 Control Principal</h3>
+      <div class="btn-grid">
+        <button class="btn" style="background:linear-gradient(135deg,#16a34a,#22c55e);color:#fff;border:1px solid #22c55e" onclick="apiPost('/api/iniciar')">▶️ Iniciar</button>
+        <button class="btn" style="background:linear-gradient(135deg,#ea580c,#f97316);color:#fff;border:1px solid #f97316" onclick="apiPost('/api/pausar')">⏸ Pausar</button>
+        <button class="btn" style="background:linear-gradient(135deg,#0891b2,#06b6d4);color:#fff;border:1px solid #06b6d4" onclick="apiPost('/api/reanudar')">▶️ Reanudar</button>
+        <button class="btn" style="background:linear-gradient(135deg,#b91c1c,#dc2626);color:#fff;border:1px solid #dc2626" onclick="apiPost('/api/detener')">⏹ Detener</button>
+        <button class="btn" style="background:linear-gradient(135deg,#7c3aed,#a855f7);color:#fff;border:1px solid #a855f7;grid-column:1/-1" onclick="apiPost('/api/home')">🏠 HOME</button>
+      </div>
+    </div>
+
+    <div class="card anim-fadeIn">
+      <h3>🔧 Control Manual (°)</h3>
+      <div style="display:grid;gap:10px">
+        <div style="display:grid;grid-template-columns:90px 1fr 50px;align-items:center;gap:8px">
+          <label style="font-size:.75rem;font-weight:600;color:#cbd5e1">Base</label>
+          <input id="sl-base" type="range" min="0" max="180" step="1" value="90" oninput="sliderMoveJoint('base', this.value)" style="cursor:pointer">
+          <span class="slider-val" id="slv-base" style="font-size:.7rem;font-weight:700;color:#38bdf8;text-align:right">90°</span>
+        </div>
+        <div style="display:grid;grid-template-columns:90px 1fr 50px;align-items:center;gap:8px">
+          <label style="font-size:.75rem;font-weight:600;color:#cbd5e1">Hombro</label>
+          <input id="sl-shoulder" type="range" min="15" max="165" step="1" value="90" oninput="sliderMoveJoint('shoulder', this.value)" style="cursor:pointer">
+          <span class="slider-val" id="slv-shoulder" style="font-size:.7rem;font-weight:700;color:#38bdf8;text-align:right">90°</span>
+        </div>
+        <div style="display:grid;grid-template-columns:90px 1fr 50px;align-items:center;gap:8px">
+          <label style="font-size:.75rem;font-weight:600;color:#cbd5e1">Codo</label>
+          <input id="sl-elbow" type="range" min="20" max="160" step="1" value="90" oninput="sliderMoveJoint('elbow', this.value)" style="cursor:pointer">
+          <span class="slider-val" id="slv-elbow" style="font-size:.7rem;font-weight:700;color:#38bdf8;text-align:right">90°</span>
+        </div>
+        <div style="display:grid;grid-template-columns:90px 1fr 50px;align-items:center;gap:8px">
+          <label style="font-size:.75rem;font-weight:600;color:#cbd5e1">Muñeca</label>
+          <input id="sl-wrist" type="range" min="20" max="170" step="1" value="90" oninput="sliderMoveJoint('wrist', this.value)" style="cursor:pointer">
+          <span class="slider-val" id="slv-wrist" style="font-size:.7rem;font-weight:700;color:#38bdf8;text-align:right">90°</span>
+        </div>
+        <div style="display:grid;grid-template-columns:90px 1fr 50px;align-items:center;gap:8px">
+          <label style="font-size:.75rem;font-weight:600;color:#cbd5e1">Pinza</label>
+          <input id="sl-gripper" type="range" min="-100" max="100" step="1" value="0" oninput="sliderMoveGripper(this.value)" onchange="sliderStopGripper()" style="cursor:pointer">
+          <span class="slider-val" id="slv-gripper" style="font-size:.7rem;font-weight:700;color:#38bdf8;text-align:right">0%</span>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="side anim-fadeIn">
+    <div class="card">
+      <h3>⚡ Estadísticas</h3>
+      <div style="display:grid;grid-template-columns:repeat(2,1fr);gap:12px">
+        <div style="background:rgba(56,189,248,.1);padding:12px;border-radius:8px;text-align:center">
+          <div style="font-size:1.8rem;font-weight:800;color:#38bdf8" id="st-detectados">0</div>
+          <div style="font-size:.7rem;color:#94a3b8;margin-top:4px">Detectados</div>
+        </div>
+        <div style="background:rgba(34,197,94,.1);padding:12px;border-radius:8px;text-align:center">
+          <div style="font-size:1.8rem;font-weight:800;color:#22c55e" id="st-exitos">0</div>
+          <div style="font-size:.7rem;color:#94a3b8;margin-top:4px">Agarres OK</div>
+        </div>
+        <div style="background:rgba(239,68,68,.1);padding:12px;border-radius:8px;text-align:center">
+          <div style="font-size:1.8rem;font-weight:800;color:#ef4444" id="st-fallos">0</div>
+          <div style="font-size:.7rem;color:#94a3b8;margin-top:4px">Fallos</div>
+        </div>
+        <div style="background:rgba(168,85,247,.1);padding:12px;border-radius:8px;text-align:center">
+          <div style="font-size:1.8rem;font-weight:800;color:#a855f7" id="st-depositos">0</div>
+          <div style="font-size:.7rem;color:#94a3b8;margin-top:4px">Depósitos</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="card">
+      <h3>🎯 Objetos Detectados</h3>
+      <div id="obj-list" style="max-height:120px;overflow-y:auto;display:grid;gap:6px">
+        <em style="color:#64748b;font-size:.8rem">Sin datos</em>
+      </div>
+    </div>
+
+    <div class="card">
+      <h3>📦 Recipientes</h3>
+      <div id="rec-list" style="max-height:120px;overflow-y:auto;display:grid;gap:6px">
+        <em style="color:#64748b;font-size:.8rem">Sin datos</em>
+      </div>
+    </div>
+
+    <div class="card">
+      <h3>🔴 Estado Sistema</h3>
+      <div id="safe-status" style="font-size:.8rem;color:#22c55e;font-weight:600;min-height:20px">✓ SAFE: OK</div>
+      <button class="btn" id="btn-reset-emerg" style="display:none;margin-top:8px;width:100%;background:linear-gradient(135deg,#7c3aed,#a855f7);color:#fff;border:1px solid #a855f7" onclick="resetEmergencia()">Reset Emergencia</button>
+    </div>
+
+    <div class="card">
+      <h3>⚠️ Emergencia</h3>
+      <button class="btn" style="width:100%;background:linear-gradient(135deg,#dc2626,#ef4444);color:#fff;border:1px solid #ef4444;font-weight:800" onclick="apiPost('/api/emergencia')">🛑 PARADA TOTAL</button>
+    </div>
+  </div>
+</div>
+
+<script>
+let CAL_MODE_ACTIVE = false;
+function apiPost(url, body){
+  fetch(url,{method:'POST',headers:{'Content-Type':'application/json'},body:body?JSON.stringify(body):'{}'})
+  .then(r=>r.json()).then(d=>{if(d.msg)console.log(d.msg)}).catch(e=>console.error(e));
+}
+function sliderMoveJoint(joint, value){
+  if(CAL_MODE_ACTIVE) return;
+  const v=Math.round(Number(value)||0);
+  const lbl=document.getElementById('slv-'+joint);
+  if(lbl) lbl.textContent=v+'°';
+  setTimeout(()=>apiPost('/api/set_angle',{joint,angle:v}), 50);
+}
+function sliderMoveGripper(value){
+  if(CAL_MODE_ACTIVE) return;
+  const v=Math.round(Number(value)||0);
+  const lbl=document.getElementById('slv-gripper');
+  if(lbl) lbl.textContent=v+'%';
+  setTimeout(()=>apiPost('/api/gripper_continuo',{speed:v}), 50);
+}
+function sliderStopGripper(){
+  if(CAL_MODE_ACTIVE) return;
+  const sl=document.getElementById('sl-gripper');
+  const lbl=document.getElementById('slv-gripper');
+  if(sl) sl.value = 0;
+  if(lbl) lbl.textContent='0%';
+  apiPost('/api/gripper_continuo',{speed:0});
+}
+function resetEmergencia(){
+  if(!confirm('¿Confirmas que el brazo está seguro? Se reactivarán los movimientos.'))return;
+  apiPost('/api/reset_emergency');
+}
+function actualizarUI(){
+  fetch('/api/estado').then(r=>r.json()).then(d=>{
+    const badge=document.getElementById('badge-estado');
+    badge.textContent=d.estado;
+    const pill=document.getElementById('diag-escaneo-ok');
+    if(pill && typeof d.ultimo_escaneo_ok==='boolean'){
+      pill.textContent=d.ultimo_escaneo_ok?'✓':'✕';
+      pill.className='diag-pill '+(d.ultimo_escaneo_ok?'ok':'bad');
+    }
+    const s=d.estadisticas;
+    document.getElementById('st-detectados').textContent=s.objetos_detectados;
+    document.getElementById('st-exitos').textContent=s.agarres_exitosos;
+    document.getElementById('st-fallos').textContent=s.agarres_fallidos;
+    document.getElementById('st-depositos').textContent=s.depositos_exitosos;
+    if(d.posiciones){
+      ['shoulder','elbow','wrist'].forEach(j=>{
+        const v=d.posiciones[j];
+        if(v!==undefined){
+          const pct=Math.round(v*100);
+          const deg=Math.round(v*180);
+          const bar=document.getElementById('pos-'+j);
+          const lbl=document.getElementById('pv-'+j);
+          if(bar)bar.style.width=pct+'%';
+          if(lbl)lbl.textContent=deg+'°';
+        }
+      });
+    }
+    if(d.safe_angles){
+      ['base','shoulder','elbow','wrist'].forEach(j=>{
+        const av=d.safe_angles[j];
+        if(av===undefined) return;
+        const slider=document.getElementById('sl-'+j);
+        const lbl=document.getElementById('slv-'+j);
+        if(slider && document.activeElement !== slider){
+          const sv=Math.round(av);
+          slider.value=sv;
+          if(lbl) lbl.textContent=sv+'°';
+        }
+      });
+    }
+    const ol=document.getElementById('obj-list');
+    if(d.objetos.length){
+      ol.innerHTML=d.objetos.map(o=>`<div style="font-size:.75rem;color:#cbd5e1;padding:6px;background:rgba(56,189,248,.1);border-radius:6px">${o.clase} <span style="color:#38bdf8;font-weight:700">${(o.confianza*100).toFixed(0)}%</span></div>`).join('');
+    } else {ol.innerHTML='<em style="color:#64748b;font-size:.8rem">Ninguno</em>'}
+    const rl=document.getElementById('rec-list');
+    if(d.recipientes.length){
+      rl.innerHTML=d.recipientes.map(r=>`<div style="font-size:.75rem;color:#cbd5e1;padding:6px;background:rgba(167,139,250,.1);border-radius:6px">${r.color} <span style="color:#a78bfa;font-weight:700">${r.depositados} obj</span></div>`).join('');
+    } else {rl.innerHTML='<em style="color:#64748b;font-size:.8rem">Ninguno</em>'}
+    const safeStatus=document.getElementById('safe-status');
+    const btnReset=document.getElementById('btn-reset-emerg');
+    if(safeStatus){
+      if(d.safe_emergency){
+        safeStatus.innerHTML='<span style="color:#ef4444;font-weight:700">⚡ Emergency Stop ACTIVO</span>';
+        if(btnReset)btnReset.style.display='block';
+      } else {
+        safeStatus.innerHTML='<span style="color:#22c55e">✓ SAFE: OK</span>';
+        if(btnReset)btnReset.style.display='none';
+      }
+    }
+    CAL_MODE_ACTIVE = !!d.calibration_mode;
+    const banner=document.getElementById('cal-banner');
+    if(banner) banner.style.display = CAL_MODE_ACTIVE ? 'block' : 'none';
+  }).catch(()=>{});
+}
+setInterval(actualizarUI,1500);
+actualizarUI();
+</script>
+</body>
+</html>
   <div>
     <div class="video-panel">
       <img id="video" src="/video_feed" alt="Video en vivo">

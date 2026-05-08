@@ -92,8 +92,10 @@ _MAX_JUMP_DEFAULT: float = 30.0
 # Timeout para adquirir HW_LOCK en cada paso de interpolación
 _HW_LOCK_TIMEOUT: float = 0.20
 
-# Orden seguro para ir a home (descarga peso antes de mover shoulder/base)
-_HOME_ORDER = ("gripper", "wrist", "elbow", "shoulder", "base")
+# Orden seguro para ir a home: base primero (menos energía al estar abajo),
+# luego hombro, codo, muñeca (descarga progresiva del brazo).
+# Optimizado para fuente 5V 20A: limita picos de corriente.
+_HOME_ORDER = ("gripper", "base", "shoulder", "elbow", "wrist")
 
 # ---------------------------------------------------------------------------
 _DEFAULT_CONFIG = Path(__file__).resolve().parent.parent / "servo_config.json"
