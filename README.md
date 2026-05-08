@@ -20,6 +20,7 @@ Brazo robótico autónomo que **detecta objetos con YOLO**, **clasifica por colo
 - [Capturas (interfaz web)](#capturas-interfaz-web)
 - [Hardware](#hardware)
 - [Documentación](#documentación)
+- [Contribuye](#contribuye)
 - [Estructura del repositorio](#estructura-del-repositorio)
 - [Configuración](#configuración)
 - [Voz opcional](#voz-opcional)
@@ -96,6 +97,17 @@ Si usas **servos continuos**, en `arm_system/servo_config_legacy.json` pon `"tip
 | [REFERENCE.md](REFERENCE.md) | Guía técnica para desarrollo |
 | [LAB_WORKBENCH.md](LAB_WORKBENCH.md) | Laboratorio, modelo YOLO propio |
 | [HARDWARE_AUDIO.md](HARDWARE_AUDIO.md) | Micrófono y altavoz en la Pi |
+| [CONTRIBUTING.md](CONTRIBUTING.md) | Cómo colaborar, fork y pull requests |
+
+## Contribuye
+
+Si quieres aportar, sigue la guía en [CONTRIBUTING.md](CONTRIBUTING.md). El flujo recomendado es:
+
+1. Haz fork y clona tu repositorio.
+2. Crea una rama nueva desde `main`.
+3. Mantén los cambios pequeños y enfocados.
+4. Prueba lo que puedas en hardware o indica claramente qué no probaste.
+5. Abre un pull request con descripción, pruebas y contexto.
 
 ## Estructura del repositorio
 

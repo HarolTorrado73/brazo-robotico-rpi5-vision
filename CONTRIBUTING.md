@@ -4,38 +4,85 @@ Gracias por interesarte en mejorar **BrazoRoboticoConIA**. Este documento resume
 
 ## Código de conducta
 
-Participar en este proyecto implica aceptar el [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md). Sé respetuoso y constructivo.
+Participar en este proyecto implica aceptar el [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md). Sé respetuoso, claro y constructivo.
 
 ## Cómo reportar errores
 
-1. **Busca** en issues existentes por si ya está reportado.
+1. **Busca** en issues existentes antes de crear uno nuevo.
 2. Abre un **issue** con:
    - Descripción del comportamiento esperado vs. observado.
    - Entorno: Raspberry Pi (modelo), sistema operativo, rama/commit del repo.
-   - Pasos para reproducir y, si aplica, logs o capturas (sin datos sensibles).
+   - Pasos para reproducir el problema.
+   - Logs, capturas o terminales relevantes (sin datos sensibles).
+3. Si el problema es de seguridad, no uses issues públicos: lee [SECURITY.md](SECURITY.md).
 
-Para **vulnerabilidades de seguridad**, no uses el issue tracker público: lee [SECURITY.md](SECURITY.md).
+## Cómo contribuir desde un fork
 
-## Cómo proponer cambios
+1. Haz **fork** del repositorio en GitHub.
+2. Clona tu fork localmente:
+   ```bash
+   git clone https://github.com/<tu_usuario>/BrazoRoboticoConIA-v2.git
+   cd BrazoRoboticoConIA-v2
+   ```
+3. Crea una rama nueva basada en `main`:
+   ```bash
+   git checkout main
+   git pull origin main
+   git checkout -b feature/<descripcion-corta>
+   ```
+4. Mantén los cambios **pequeños y enfocados**: un PR por función o corrección.
+5. No hagas push directo a `main`; usa siempre tu rama de trabajo.
+6. Antes de abrir el PR, sincroniza tu rama con `main` para evitar conflictos.
 
-1. **Fork** del repositorio y rama nueva desde `main` (`feature/…` o `fix/…`).
-2. Cambios **acotados**: un tema por pull request facilita la revisión.
-3. **Prueba** en la medida de lo posible:
-   - En PC: imports y tests que no requieran hardware.
-   - En Raspberry Pi: flujo web, cámara y servos según lo que toques.
-4. **Commits** con mensajes claros en español o inglés (mantén coherencia con el historial del repo).
-5. Abre un **Pull Request** describiendo qué hace el cambio y por qué.
+## Pruebas y validación
+
+- Ejecuta las pruebas o comandos pertinentes antes de enviar cambios.
+- Si no tienes hardware real, indica claramente en el PR qué partes no pudiste verificar.
+- Comprueba:
+  - `pip install -r requirements.txt` y/o `requirements-voice.txt`
+  - que no haya errores de sintaxis en Python
+  - que los cambios no rompan la documentación o la estructura del proyecto
+
+## Commits y mensajes
+
+- Usa mensajes breves, descriptivos y en el mismo idioma del repositorio.
+- Ejemplo: `Mejora: guía de contribución para forks` o `Fix: streaming de cámara con rpicam-still`.
+- Evita commits con cambios no relacionados a la misma tarea.
+
+## Cómo crear un Pull Request
+
+1. Empuja tu rama al fork:
+   ```bash
+   git push origin feature/<descripcion-corta>
+   ```
+2. Abre un pull request contra `main` en el repositorio original.
+3. Describe:
+   - el objetivo del cambio
+   - los archivos principales modificados
+   - qué se probó y en qué entorno
+   - si quedan aspectos pendientes o riesgos
+4. Si el PR resuelve un issue, menciona `Closes #<número>`.
 
 ## Estilo de código
 
 - Sigue el estilo ya presente en los archivos que modifiques (imports, logging, nombres).
-- Evita cambios masivos de formato no relacionados con la corrección o la función nueva.
-- Si añades dependencias, justifícalas en el PR y actualiza `requirements.txt` o `requirements-voice.txt` según corresponda.
+- Mantén la indentación y formato coherentes.
+- Evita cambios masivos de formato cuando no sean estrictamente necesarios.
+- Si añades dependencias, justifica su uso y actualiza `requirements.txt` o `requirements-voice.txt`.
 
 ## Documentación
 
-- Si el cambio afecta al uso del brazo, la instalación o la seguridad, actualiza el `.md` relevante (`README.md`, `PUESTA_EN_MARCHA.md`, `REFERENCE.md`, etc.) en el mismo PR cuando tenga sentido.
+- Si el cambio afecta al uso del brazo, la instalación, la configuración o la seguridad, actualiza el `.md` relevante.
+- Ejemplos: `README.md`, `PUESTA_EN_MARCHA.md`, `REFERENCE.md`, `HARDWARE_AUDIO.md`.
 
-## Hardware
+## Hardware y validación en Raspberry Pi
 
-Muchas contribuciones requieren **Raspberry Pi**, PCA9685, cámara, etc. Si no puedes probar en hardware real, indícalo en el PR para que otro colaborador pueda validar.
+- Muchas contribuciones dependen de hardware real: cámara CSI, PCA9685, servos y alimentación.
+- Si no puedes probar todos los cambios en hardware, indícalo en el PR y describe qué sí verificaste.
+
+## Comunicación
+
+- Si no estás seguro de un cambio grande, abre un issue antes de trabajar.
+- Describe claramente el problema y las ideas de solución.
+- Usa el issue tracker para coordinar cambios mayores y evitar trabajo duplicado.
+
