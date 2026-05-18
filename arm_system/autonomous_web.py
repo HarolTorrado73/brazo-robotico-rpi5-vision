@@ -16,6 +16,11 @@ import json
 from datetime import datetime
 from pathlib import Path
 
+try:
+    import psutil
+except Exception:
+    psutil = None
+
 from flask import Flask, Response, request, jsonify, render_template_string
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -69,6 +74,13 @@ if not _calib_log.handlers:
     _fh.setFormatter(log.Formatter('%(asctime)s [%(levelname)s] %(message)s'))
     _calib_log.addHandler(_fh)
 
+_learning_state = {
+    'enabled': False,
+    'events': [],
+}
+_learning_dir = Path(__file__).resolve().parent.parent / 'learning_records'
+_learning_dir.mkdir(parents=True, exist_ok=True)
+
 app = Flask(__name__)
 cerebro = None
 hilo_autonomo = None
@@ -109,6 +121,17 @@ def _anunciar_voz(frase: str) -> None:
         pass
 
 
+def _register_learning_event(event_type: str, payload: dict) -> None:
+    if not _learning_state['enabled']:
+        return
+    _learning_state['events'].append({
+        'ts': datetime.utcnow().isoformat() + 'Z',
+        'type': event_type,
+        'payload': payload,
+    })
+    log.info('LEARNING EVENT %s %s', event_type, payload)
+
+
 def _is_calibration_enabled() -> bool:
     with _calibration_lock:
         return bool(_calibration_state['enabled'])
@@ -119,6 +142,272 @@ def _calibration_blocked_response(endpoint_name: str):
         'ok': False,
         'msg': f'Calibración segura activa. Endpoint bloqueado: {endpoint_name}'
     }), 423
+
+
+def _obtener_metricas_sistema():
+    metrics = {
+        'cpu_percent': None,
+        'ram_percent': None,
+        'ram_total_mb': None,
+        'ram_used_mb': None,
+        'temperature_celsius': None,
+        'platform': sys.platform,
+    }
+    if psutil:
+        try:
+            metrics['cpu_percent'] = psutil.cpu_percent(interval=None)
+        except Exception:
+            pass
+        try:
+            mem = psutil.virtual_memory()
+            metrics['ram_percent'] = mem.percent
+            metrics['ram_total_mb'] = int(mem.total / 1024 / 1024)
+            metrics['ram_used_mb'] = int((mem.total - mem.available) / 1024 / 1024)
+        except Exception:
+            pass
+        try:
+            temps = psutil.sensors_temperatures() if hasattr(psutil, 'sensors_temperatures') else {}
+            if temps:
+                first = next(iter(temps.values()), None)
+                if first:
+                    metrics['temperature_celsius'] = float(first[0].current)
+        except Exception:
+            pass
+    else:
+        if os.path.exists('/sys/class/thermal/thermal_zone0/temp'):
+            try:
+                with open('/sys/class/thermal/thermal_zone0/temp', 'r', encoding='utf-8') as f:
+                    raw = f.read().strip()
+                metrics['temperature_celsius'] = round(int(raw) / 1000.0, 1)
+            except Exception:
+                pass
+        if os.path.exists('/proc/meminfo'):
+            try:
+                with open('/proc/meminfo', 'r', encoding='utf-8') as f:
+                    lines = f.readlines()
+                meminfo = {line.split(':')[0]: int(line.split(':')[1].strip().split()[0]) for line in lines if ':' in line}
+                total = meminfo.get('MemTotal')
+                free = meminfo.get('MemFree')
+                available = meminfo.get('MemAvailable', free)
+                if total and available is not None:
+                    metrics['ram_total_mb'] = int(total / 1024)
+                    metrics['ram_used_mb'] = int((total - available) / 1024)
+                    metrics['ram_percent'] = round(100.0 * (total - available) / total, 1)
+            except Exception:
+                pass
+    return metrics
+
+
+def _diagnosticar_sistema(c):
+    camera_disabled = getattr(c, '_camera_disabled_runtime', False)
+    vision_disabled = getattr(c, '_vision_disabled_runtime', False)
+    camera_present = c.camara is not None
+    yolo_present = c.detector_yolo is not None
+    color_present = c.detector_color is not None
+
+    diagnostics = []
+
+    if camera_disabled:
+        diagnostics.append({
+            'title': 'Cámara deshabilitada',
+            'status': 'warn',
+            'category': 'Cámara',
+            'description': 'La captura de video está desactivada en tiempo de ejecución o por configuración.',
+            'why': 'BR_DISABLE_CAMERA=1 o CAMARA_HABILITADA=False.',
+            'fix': 'Verifique la configuración y habilite la cámara si necesita visión en tiempo real.',
+        })
+        camera_status = {'level': 'warn', 'message': 'Cámara desactivada por configuración'}
+    elif not camera_present:
+        diagnostics.append({
+            'title': 'Cámara no encontrada',
+            'status': 'error',
+            'category': 'Cámara',
+            'description': 'El sistema no pudo inicializar la cámara de captura.',
+            'why': 'Puede faltar hardware, cable CSI suelto o librería de cámara no disponible.',
+            'fix': 'Compruebe el cable, habilite la cámara en raspi-config o instale los controladores necesarios.',
+        })
+        camera_status = {'level': 'error', 'message': 'Cámara no inicializada'}
+    else:
+        diagnostics.append({
+            'title': 'Cámara operativa',
+            'status': 'ok',
+            'category': 'Cámara',
+            'description': 'El flujo de video está disponible para supervisión y detección.',
+            'why': 'La cámara respondió correctamente al inicializarse.',
+            'fix': 'Ninguno.',
+        })
+        camera_status = {'level': 'ok', 'message': 'Cámara operativa'}
+
+    if vision_disabled:
+        diagnostics.append({
+            'title': 'Visión desactivada',
+            'status': 'warn',
+            'category': 'Visión',
+            'description': 'El stack de visión (YOLO + color) está deshabilitado en tiempo de ejecución.',
+            'why': 'BR_DISABLE_VISION=1.',
+            'fix': 'Habilite la visión si desea usar detección visual.',
+        })
+        vision_status = {'level': 'warn', 'message': 'Visión desactivada por configuración'}
+    else:
+        missing = []
+        if not yolo_present:
+            missing.append('YOLO')
+        if not color_present:
+            missing.append('Detector de color')
+        if missing:
+            diagnostics.append({
+                'title': 'Visión parcial',
+                'status': 'warn',
+                'category': 'Visión',
+                'description': 'Faltan componentes de detección visual: ' + ', '.join(missing) + '.',
+                'why': 'El sistema no pudo cargar uno o más modelos de visión.',
+                'fix': 'Compruebe dependencias, archivos de modelo y configuraciones de detección.',
+            })
+            vision_status = {'level': 'warn', 'message': 'Visión parcial: ' + ', '.join(missing)}
+        else:
+            diagnostics.append({
+                'title': 'Visión completa',
+                'status': 'ok',
+                'category': 'Visión',
+                'description': 'YOLO y el detector de color están cargados y listos.',
+                'why': 'El pipeline de detección se inicializó correctamente.',
+                'fix': 'Ninguno.',
+            })
+            vision_status = {'level': 'ok', 'message': 'Visión operativa'}
+
+    hardware_status = {'level': 'ok', 'message': 'No hay problemas detectados'}
+    if getattr(c, 'robot', None) is None:
+        diagnostics.append({
+            'title': 'Controlador de robot faltante',
+            'status': 'error',
+            'category': 'Hardware',
+            'description': 'El subsistema de control de servos no se inicializó correctamente.',
+            'why': 'Puede haber un problema con el controlador PCA9685 o dependencias de I2C.',
+            'fix': 'Revise la conexión del PCA9685 y los controladores de hardware.',
+        })
+        hardware_status = {'level': 'error', 'message': 'Controlador robot no inicializado'}
+    else:
+        servo_ctrl = getattr(c.robot, 'controlador_servo', None)
+        if servo_ctrl is None:
+            diagnostics.append({
+                'title': 'Controlador de servos inaccesible',
+                'status': 'error',
+                'category': 'Hardware',
+                'description': 'La instancia de ControladorServo no está disponible.',
+                'why': 'El subsistema de robot no pudo crear o exponer el controlador de servos.',
+                'fix': 'Revise el arranque del sistema y los registros de inicialización.',
+            })
+            hardware_status = {'level': 'error', 'message': 'Servos no accesibles'}
+        else:
+            servo_count = len(getattr(servo_ctrl, 'servos', {}) or {})
+            diagnostics.append({
+                'title': 'Hardware listo',
+                'status': 'ok',
+                'category': 'Hardware',
+                'description': f'Controlador de servos cargado con {servo_count} servos configurados.',
+                'why': 'La instancia de ControladorServo está activa.',
+                'fix': 'Ninguno.',
+            })
+            hardware_status = {'level': 'ok', 'message': f'{servo_count} servos configurados'}
+
+    safe = obtener_safe_ctrl()
+    if safe.is_emergency:
+        diagnostics.append({
+            'title': 'Estado SAFE: Emergency Stop',
+            'status': 'error',
+            'category': 'SafeController',
+            'description': 'El modo de emergencia detuvo el robot por seguridad.',
+            'why': 'Se ha activado una parada de emergencia manual o automática.',
+            'fix': 'Revise la posición física y use Reset Emergencia cuando sea seguro.',
+        })
+        safe_status = {'level': 'error', 'message': 'Emergency Stop activo'}
+    elif safe.is_simulation:
+        diagnostics.append({
+            'title': 'SafeController en modo simulación',
+            'status': 'warn',
+            'category': 'SafeController',
+            'description': 'Los movimientos se limitan a simulación segura en software.',
+            'why': 'El controlador seguro actúa en modo de prueba o sin hardware completo.',
+            'fix': 'Desactive el modo de simulación si desea operar el hardware real.',
+        })
+        safe_status = {'level': 'warn', 'message': 'Modo simulación activo'}
+    else:
+        diagnostics.append({
+            'title': 'SafeController operativo',
+            'status': 'ok',
+            'category': 'SafeController',
+            'description': 'El controlador de seguridad está listo para aceptar comandos.',
+            'why': 'No se detectaron condiciones de emergencia.',
+            'fix': 'Ninguno.',
+        })
+        safe_status = {'level': 'ok', 'message': 'SafeController listo'}
+
+    learning_status = {
+        'level': 'ok' if _learning_state['enabled'] else 'warn',
+        'message': 'Grabación activa' if _learning_state['enabled'] else 'Grabación inactiva',
+    }
+    if _learning_state['enabled']:
+        diagnostics.append({
+            'title': 'Modo aprendizaje activo',
+            'status': 'warn',
+            'category': 'Aprendizaje',
+            'description': 'El sistema está grabando eventos de demostración en tiempo real.',
+            'why': 'La grabación de demostraciones está habilitada en la interfaz.',
+            'fix': 'Use Exportar demo cuando finalice la secuencia.',
+        })
+    else:
+        diagnostics.append({
+            'title': 'Aprendizaje en espera',
+            'status': 'ok',
+            'category': 'Aprendizaje',
+            'description': 'El sistema está listo para comenzar a grabar demostraciones.',
+            'why': 'No se ha iniciado la grabación de eventos.',
+            'fix': 'Actívela desde el panel de Aprendizaje.',
+        })
+
+    metrics = _obtener_metricas_sistema()
+    if metrics.get('cpu_percent') is not None and metrics['cpu_percent'] > 85:
+        diagnostics.append({
+            'title': 'Uso de CPU elevado',
+            'status': 'warn',
+            'category': 'Sistema',
+            'description': f'CPU al {metrics["cpu_percent"]:.0f}% indicando presión de carga.',
+            'why': 'La aplicación o el sistema ocupan demasiada CPU.',
+            'fix': 'Cierre procesos innecesarios o reduzca la carga de visión.',
+        })
+    if metrics.get('ram_percent') is not None and metrics['ram_percent'] > 90:
+        diagnostics.append({
+            'title': 'Memoria RAM alta',
+            'status': 'warn',
+            'category': 'Sistema',
+            'description': f'RAM usada al {metrics["ram_percent"]:.0f}%.',
+            'why': 'El sistema puede quedarse sin memoria si la tendencia continúa.',
+            'fix': 'Libere memoria cerrando aplicaciones o reinicie el sistema.',
+        })
+    if metrics.get('temperature_celsius') is not None and metrics['temperature_celsius'] >= 72:
+        diagnostics.append({
+            'title': 'Temperatura elevada',
+            'status': 'warn',
+            'category': 'Sistema',
+            'description': f'Temperatura del sistema: {metrics["temperature_celsius"]:.1f}°C.',
+            'why': 'El hardware puede estar caliente debido a carga prolongada.',
+            'fix': 'Asegure ventilación adecuada y reduzca la carga si es necesario.',
+        })
+
+    counts = {'ok': 0, 'warn': 0, 'error': 0}
+    for item in diagnostics:
+        counts[item['status']] = counts.get(item['status'], 0) + 1
+
+    return {
+        'summary': counts,
+        'items': diagnostics,
+        'camera_status': camera_status,
+        'vision_status': vision_status,
+        'hardware_status': hardware_status,
+        'safe_status': safe_status,
+        'learning_status': learning_status,
+        'system_metrics': metrics,
+    }
 
 
 def _calibration_event(action: str, joint: str = '', from_angle=None, to_angle=None, extra: str = '') -> None:
@@ -449,6 +738,13 @@ def api_estado():
         estado['calibration_active_joint'] = str(_calibration_state['active_joint'])
         estado['calibration_limits'] = json.loads(json.dumps(_calibration_state['limits']))
 
+    estado['learning'] = {
+        'enabled': bool(_learning_state['enabled']),
+        'recorded_events': len(_learning_state['events']),
+    }
+    estado['system_metrics'] = _obtener_metricas_sistema()
+    estado['diagnostics'] = _diagnosticar_sistema(c)
+
     return jsonify(estado)
 
 
@@ -565,10 +861,16 @@ def api_mover():
     if joint == 'gripper':
         try:
             c = obtener_cerebro()
-            c.robot.controlador_servo.mover_por_tiempo('gripper', direccion, 0.25, velocidad=0.45)
+            c.robot.controlador_servo.mover_por_tiempo('gripper', direccion, 1.00, velocidad=0.45)
+            _register_learning_event('gripper_manual', {
+                'joint': 'gripper',
+                'direction': direccion,
+                'duration_s': 1.0,
+                'speed': 0.45,
+            })
             return jsonify({
                 'ok': True,
-                'msg': f'gripper continuo movido dir={direccion:+d} (0.25s)'
+                'msg': f'gripper continuo movido dir={direccion:+d} (1.00s)'
             })
         except Exception as exc:
             return jsonify({
@@ -580,9 +882,16 @@ def api_mover():
     ok = safe.move_relative(joint, delta)
 
     if ok:
+        applied = safe.get_angle(joint)
+        _register_learning_event('move_joint', {
+            'joint': joint,
+            'dir': direccion,
+            'delta': delta,
+            'angle_applied': applied,
+        })
         return jsonify({
             'ok': True,
-            'msg': f'{joint} movido {delta:+.0f}° → {safe.get_angle(joint):.1f}°'
+            'msg': f'{joint} movido {delta:+.0f}° → {applied:.1f}°'
         })
     else:
         return jsonify({'ok': False, 'msg': 'Movimiento rechazado por SafeController'})
@@ -636,6 +945,11 @@ def api_set_angle():
                 return jsonify({'ok': False, 'msg': f'Movimiento final rechazado ({joint})'})
 
     applied = safe.get_angle(joint)
+    _register_learning_event('set_angle', {
+        'joint': joint,
+        'target_angle': angle,
+        'angle_applied': applied,
+    })
     return jsonify({'ok': True, 'msg': f'{joint} => {applied:.1f}°', 'angle_applied': applied})
 
 
@@ -662,14 +976,59 @@ def api_gripper_continuo():
     try:
         if speed == 0:
             c.robot.controlador_servo.detener_servo('gripper')
+            _register_learning_event('gripper_continuo', {
+                'action': 'stop',
+                'speed': 0,
+            })
             return jsonify({'ok': True, 'msg': 'gripper continuo detenido'})
 
         direccion = 1 if speed > 0 else -1
         velocidad = max(0.2, min(1.0, abs(speed) / 100.0))
-        c.robot.controlador_servo.mover_por_tiempo('gripper', direccion, 0.12, velocidad=velocidad)
+        c.robot.controlador_servo.mover_por_tiempo('gripper', direccion, 1.00, velocidad=velocidad)
+        _register_learning_event('gripper_continuo', {
+            'action': 'move',
+            'direction': direccion,
+            'speed': speed,
+            'normalized_speed': velocidad,
+            'duration_s': 1.0,
+        })
         return jsonify({'ok': True, 'msg': f'gripper continuo speed={speed}'})
     except Exception as exc:
         return jsonify({'ok': False, 'msg': f'Error en gripper continuo: {exc}'})
+
+
+@app.route('/api/learning/toggle', methods=['POST'])
+def api_learning_toggle():
+    if _is_calibration_enabled():
+        return _calibration_blocked_response('/api/learning/toggle')
+    data = request.get_json() or {}
+    enable = data.get('enable')
+    if enable is None:
+        return jsonify({'ok': False, 'msg': 'Falta parámetro enable'})
+    enabled = str(enable).lower() in ('1', 'true', 'yes', 'on')
+    _learning_state['enabled'] = enabled
+    if enabled:
+        _learning_state['events'].clear()
+        return jsonify({'ok': True, 'msg': 'Grabación de demostración iniciada'})
+    return jsonify({
+        'ok': True,
+        'msg': f'Grabación detenida ({len(_learning_state["events"])} eventos)',
+        'count': len(_learning_state['events'])
+    })
+
+
+@app.route('/api/learning/export', methods=['POST'])
+def api_learning_export():
+    if not _learning_state['events']:
+        return jsonify({'ok': False, 'msg': 'No hay eventos grabados para exportar'})
+    filename = f'learning_demo_{datetime.utcnow().strftime("%Y%m%d_%H%M%S")}.json'
+    filepath = _learning_dir / filename
+    with filepath.open('w', encoding='utf-8') as f:
+        json.dump({
+            'created': datetime.utcnow().isoformat() + 'Z',
+            'events': _learning_state['events'],
+        }, f, ensure_ascii=False, indent=2)
+    return jsonify({'ok': True, 'msg': 'Demostración guardada', 'filename': filename, 'count': len(_learning_state['events'])})
 
 
 @app.route('/api/emergencia', methods=['POST'])
@@ -984,12 +1343,14 @@ html{scroll-behavior:smooth}
 .top-bar-diag{margin-top:12px;padding-top:12px;border-top:1px solid rgba(56,189,248,.1);display:flex;gap:16px;font-size:.75rem;color:#cbd5e1}
 .diag-pill{padding:4px 12px;border-radius:12px;font-weight:700;font-size:.7rem}
 .diag-pill.ok{background:#14532d;color:#bbf7d0}
+.diag-pill.warn{background:#f59e0b;color:#1f2937}
 .diag-pill.bad{background:#7f1d1d;color:#fecaca}
 .cal-banner{display:none;margin-top:12px;padding:12px 16px;border:1px solid #ef4444;background:rgba(239,68,68,.1);color:#fca5a5;border-radius:8px;font-size:.8rem;font-weight:700}
 .main{display:grid;grid-template-columns:1fr 420px;gap:20px;padding:20px 32px;max-width:1600px;margin:0 auto}
 @media(max-width:1200px){.main{grid-template-columns:1fr;gap:16px}}
 .video-section{background:rgba(30,41,59,.6);border-radius:16px;overflow:hidden;border:1px solid rgba(56,189,248,.15);box-shadow:0 8px 32px rgba(56,189,248,.05);animation:fadeIn .6s ease-out}
 .video-panel img{width:100%;display:block;min-height:400px;background:#000;object-fit:cover}
+.video-panel img.invert{transform:rotate(180deg);transition:transform .2s ease}
 .controls-grid{display:grid;gap:16px}
 .side{display:flex;flex-direction:column;gap:16px}
 .card{background:rgba(30,41,59,.6);border-radius:16px;padding:20px;border:1px solid rgba(56,189,248,.1);backdrop-filter:blur(10px);transition:all .3s}
@@ -1062,7 +1423,9 @@ html{scroll-behavior:smooth}
     <span class="estado-badge" id="badge-estado">IDLE</span>
   </div>
   <div class="top-bar-diag">
-    <span>Cámara: <span class="diag-pill ok" id="diag-escaneo-ok">—</span></span>
+    <span>Cámara: <span class="diag-pill ok" id="diag-camera-pill">—</span></span>
+    <span>Visión: <span class="diag-pill ok" id="diag-vision-pill">—</span></span>
+    <span>Hardware: <span class="diag-pill ok" id="diag-hardware-pill">—</span></span>
     <span id="diag-escaneo-motivo" title="Estado último escaneo" style="font-size:.7rem;color:#cbd5e1">—</span>
   </div>
   <div class="cal-banner" id="cal-banner">🔒 MODO CALIBRACIÓN ACTIVO — Movimiento bloqueado</div>
@@ -1071,8 +1434,38 @@ html{scroll-behavior:smooth}
 <div class="main">
   <div class="controls-grid">
     <div class="video-section">
-      <img id="video" src="/video_feed" alt="Stream de cámara en vivo">
+      <div class="video-panel">
+        <img id="video" src="/video_feed" alt="Stream de cámara en vivo">
+      </div>
+      <div style="padding:10px;display:flex;gap:8px;align-items:center">
+        <button class="btn" id="btn-invert" style="padding:8px;font-size:.85rem" onclick="toggleInvert()">🔄 Invertir imagen</button>
+        <small style="color:#94a3b8">Girar 180° (útil si la cámara está invertida)</small>
+      </div>
     </div>
+
+    <script>
+    // Toggle display-only inversion for the stream image (persists in localStorage)
+    function toggleInvert(){
+      const img = document.getElementById('video');
+      if(!img) return;
+      img.classList.toggle('invert');
+      const inv = img.classList.contains('invert');
+      try{ localStorage.setItem('video_invert', inv? '1':'0'); }catch(e){}
+      const btn = document.getElementById('btn-invert');
+      if(btn) btn.textContent = inv? '🔄 Invertida' : '🔄 Invertir imagen';
+    }
+    (function(){
+      try{
+        const v = localStorage.getItem('video_invert');
+        if(v==='1'){
+          const img = document.getElementById('video');
+          if(img) img.classList.add('invert');
+          const btn = document.getElementById('btn-invert');
+          if(btn) btn.textContent = '🔄 Invertida';
+        }
+      }catch(e){}
+    })();
+    </script>
 
     <div class="card anim-fadeIn">
       <h3>📊 Estado del Brazo</h3>
@@ -1204,6 +1597,33 @@ html{scroll-behavior:smooth}
     </div>
 
     <div class="card">
+      <h3>Centro de Diagnóstico</h3>
+      <div class="stat-grid">
+        <div class="stat"><div class="val" id="health-errors">0</div><div class="lbl">Errores</div></div>
+        <div class="stat"><div class="val" id="health-warnings">0</div><div class="lbl">Advertencias</div></div>
+        <div class="stat"><div class="val" id="health-ok">0</div><div class="lbl">Sistemas OK</div></div>
+      </div>
+      <div style="margin-top:12px;line-height:1.5;font-size:.82rem;color:#cbd5e1">
+        <div><strong>Cámara:</strong> <span id="diag-camera-status">—</span></div>
+        <div><strong>Visión:</strong> <span id="diag-vision-status">—</span></div>
+        <div><strong>Hardware:</strong> <span id="diag-hardware-status">—</span></div>
+      </div>
+      <div id="diag-list" style="margin-top:12px;font-size:.78rem;color:#cbd5e1;line-height:1.5;max-height:160px;overflow-y:auto"></div>
+    </div>
+
+    <div class="card">
+      <h3>Aprendizaje por demostración</h3>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:10px">
+        <button class="btn-sm" id="btn-learning-toggle" style="background:#2563eb" onclick="toggleLearning()">Grabar demo</button>
+        <button class="btn-sm" style="background:#047857" onclick="exportLearning()">Exportar demo</button>
+      </div>
+      <div style="font-size:.78rem;color:#cbd5e1;line-height:1.45">
+        Estado: <strong id="learning-status">OFF</strong>
+        <div id="learning-count" style="margin-top:4px">0 eventos</div>
+      </div>
+    </div>
+
+    <div class="card">
       <h3>⚠️ Emergencia</h3>
       <button class="btn" style="width:100%;background:linear-gradient(135deg,#dc2626,#ef4444);color:#fff;border:1px solid #ef4444;font-weight:800" onclick="apiPost('/api/emergencia')">🛑 PARADA TOTAL</button>
     </div>
@@ -1246,16 +1666,61 @@ function actualizarUI(){
   fetch('/api/estado').then(r=>r.json()).then(d=>{
     const badge=document.getElementById('badge-estado');
     badge.textContent=d.estado;
-    const pill=document.getElementById('diag-escaneo-ok');
-    if(pill && typeof d.ultimo_escaneo_ok==='boolean'){
-      pill.textContent=d.ultimo_escaneo_ok?'✓':'✕';
-      pill.className='diag-pill '+(d.ultimo_escaneo_ok?'ok':'bad');
+    const cameraPill=document.getElementById('diag-camera-pill');
+    const visionPill=document.getElementById('diag-vision-pill');
+    const hardwarePill=document.getElementById('diag-hardware-pill');
+    const mot=document.getElementById('diag-escaneo-motivo');
+    if(d.diagnostics){
+      if(cameraPill && d.diagnostics.camera_status){
+        cameraPill.textContent=d.diagnostics.camera_status.message;
+        cameraPill.className='diag-pill '+d.diagnostics.camera_status.level;
+      }
+      if(visionPill && d.diagnostics.vision_status){
+        visionPill.textContent=d.diagnostics.vision_status.message;
+        visionPill.className='diag-pill '+d.diagnostics.vision_status.level;
+      }
+      if(hardwarePill && d.diagnostics.hardware_status){
+        hardwarePill.textContent=d.diagnostics.hardware_status.message;
+        hardwarePill.className='diag-pill '+d.diagnostics.hardware_status.level;
+      }
+    } else if(cameraPill && typeof d.ultimo_escaneo_ok==='boolean'){
+      cameraPill.textContent=d.ultimo_escaneo_ok?'OK':'Falla';
+      cameraPill.className='diag-pill '+(d.ultimo_escaneo_ok?'ok':'bad');
+    }
+    if(mot && d.ultimo_escaneo_motivo!==undefined){
+      mot.textContent=d.ultimo_escaneo_motivo;
     }
     const s=d.estadisticas;
     document.getElementById('st-detectados').textContent=s.objetos_detectados;
     document.getElementById('st-exitos').textContent=s.agarres_exitosos;
     document.getElementById('st-fallos').textContent=s.agarres_fallidos;
     document.getElementById('st-depositos').textContent=s.depositos_exitosos;
+    const learningStatus=document.getElementById('learning-status');
+    const learningCount=document.getElementById('learning-count');
+    if(learningStatus) learningStatus.textContent = d.learning && d.learning.enabled ? 'ON' : 'OFF';
+    if(learningCount) learningCount.textContent = d.learning ? d.learning.recorded_events + ' eventos' : '0 eventos';
+    if(d.diagnostics){
+      const health = d.diagnostics.summary || {ok:0,warn:0,error:0};
+      const errors = document.getElementById('health-errors');
+      const warns = document.getElementById('health-warnings');
+      const oks = document.getElementById('health-ok');
+      if(errors) errors.textContent = health.error;
+      if(warns) warns.textContent = health.warn;
+      if(oks) oks.textContent = health.ok;
+      const cameraStatus = document.getElementById('diag-camera-status');
+      const visionStatus = document.getElementById('diag-vision-status');
+      const hardwareStatus = document.getElementById('diag-hardware-status');
+      if(cameraStatus && d.diagnostics.camera_status) cameraStatus.textContent = d.diagnostics.camera_status.message;
+      if(visionStatus && d.diagnostics.vision_status) visionStatus.textContent = d.diagnostics.vision_status.message;
+      if(hardwareStatus && d.diagnostics.hardware_status) hardwareStatus.textContent = d.diagnostics.hardware_status.message;
+      const diagList = document.getElementById('diag-list');
+      if(diagList){
+        diagList.innerHTML = d.diagnostics.items.slice(0,6).map(item => {
+          const color = item.status === 'error' ? '#fca5a5' : item.status === 'warn' ? '#fde68a' : '#86efac';
+          return `<div style="margin-bottom:10px"><span style="font-weight:700;color:${color}">${item.title}</span><div style="font-size:.78rem;color:#cbd5e1;margin-top:4px">${item.description}</div></div>`;
+        }).join('');
+      }
+    }
     if(d.posiciones){
       ['shoulder','elbow','wrist'].forEach(j=>{
         const v=d.posiciones[j];
@@ -1306,438 +1771,6 @@ function actualizarUI(){
     if(banner) banner.style.display = CAL_MODE_ACTIVE ? 'block' : 'none';
   }).catch(()=>{});
 }
-setInterval(actualizarUI,1500);
-actualizarUI();
-</script>
-</body>
-</html>
-  <div>
-    <div class="video-panel">
-      <img id="video" src="/video_feed" alt="Video en vivo">
-    </div>
-    <div class="card" style="margin-top:12px" id="legacy-manual-card">
-      <h3>Control Manual Rapido</h3>
-      <div class="manual-grid">
-        <button class="btn-sm" onclick="manualMove('shoulder',1)">Hombro +</button>
-        <button class="btn-sm" onclick="manualMove('elbow',1)">Codo +</button>
-        <button class="btn-sm" onclick="manualMove('wrist',1)">Muneca +</button>
-        <button class="btn-sm" onclick="manualMove('shoulder',-1)">Hombro -</button>
-        <button class="btn-sm" onclick="manualMove('elbow',-1)">Codo -</button>
-        <button class="btn-sm" onclick="manualMove('wrist',-1)">Muneca -</button>
-        <button class="btn-sm" style="background:#166534" onclick="manualMove('gripper',1)">Pinza Abrir</button>
-        <button class="btn-sm" style="background:#475569" onclick="apiPost('/api/home')">HOME</button>
-        <button class="btn-sm" style="background:#991b1b" onclick="manualMove('gripper',-1)">Pinza Cerrar</button>
-        <button class="btn-sm" style="background:#0e7490" onclick="moverBase(-1)">Base Izq</button>
-        <button class="btn-sm" style="background:#64748b">---</button>
-        <button class="btn-sm" style="background:#0e7490" onclick="moverBase(1)">Base Der</button>
-      </div>
-    </div>
-    <div class="card" style="margin-top:12px" id="legacy-slider-card">
-      <h3>Modo Calibracion Segura</h3>
-      <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:8px">
-        <button class="btn-sm" style="background:#065f46" onclick="apiPost('/api/calibration/enable')">Calibracion ON</button>
-        <button class="btn-sm" style="background:#334155" onclick="apiPost('/api/calibration/disable')">Calibracion OFF</button>
-        <button class="btn-sm" style="background:#991b1b" onclick="apiPost('/api/calibration/stop')">STOP</button>
-        <button class="btn-sm" style="background:#b91c1c" onclick="apiPost('/api/calibration/emergency')">EMERGENCY</button>
-      </div>
-      <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:8px">
-        <button class="btn-sm" onclick="calibSelect('base')">Joint: Base</button>
-        <button class="btn-sm" onclick="calibSelect('shoulder')">Joint: Hombro</button>
-        <button class="btn-sm" onclick="calibSelect('elbow')">Joint: Codo</button>
-        <button class="btn-sm" onclick="calibSelect('wrist')">Joint: Muneca</button>
-      </div>
-      <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:8px">
-        <button class="btn-sm" style="background:#0f766e" onclick="calibStep(-1)">-1°</button>
-        <button class="btn-sm" style="background:#0f766e" onclick="calibStep(1)">+1°</button>
-        <button class="btn-sm" style="background:#a16207" onclick="apiPost('/api/calibration/save_min')">Guardar MIN</button>
-        <button class="btn-sm" style="background:#a16207" onclick="apiPost('/api/calibration/save_max')">Guardar MAX</button>
-        <button class="btn-sm" style="background:#7c3aed" onclick="apiPost('/api/calibration/commit')">Commit Limites</button>
-      </div>
-      <div style="font-size:.76rem;color:#cbd5e1;line-height:1.45">
-        <div>Estado: <strong id="cal-mode">OFF</strong> · Runtime: <strong id="cal-runtime">IDLE</strong></div>
-        <div>Joint activo: <strong id="cal-joint">shoulder</strong></div>
-      </div>
-    </div>
-    <div class="card" style="margin-top:12px">
-      <h3>Control por Barras (Tiempo Real)</h3>
-      <div class="slider-wrap">
-        <div class="slider-row">
-          <label for="sl-base">Base</label>
-          <input id="sl-base" type="range" min="0" max="180" step="1" value="90"
-                 oninput="sliderMoveJoint('base', this.value)">
-          <span class="slider-val" id="slv-base">90°</span>
-        </div>
-        <div class="slider-row">
-          <label for="sl-shoulder">Hombro</label>
-          <input id="sl-shoulder" type="range" min="15" max="165" step="1" value="90"
-                 oninput="sliderMoveJoint('shoulder', this.value)">
-          <span class="slider-val" id="slv-shoulder">90°</span>
-        </div>
-        <div class="slider-row">
-          <label for="sl-elbow">Codo</label>
-          <input id="sl-elbow" type="range" min="20" max="160" step="1" value="90"
-                 oninput="sliderMoveJoint('elbow', this.value)">
-          <span class="slider-val" id="slv-elbow">90°</span>
-        </div>
-        <div class="slider-row">
-          <label for="sl-wrist">Muneca</label>
-          <input id="sl-wrist" type="range" min="20" max="170" step="1" value="90"
-                 oninput="sliderMoveJoint('wrist', this.value)">
-          <span class="slider-val" id="slv-wrist">90°</span>
-        </div>
-        <div class="slider-row">
-          <label for="sl-gripper">Pinza 360</label>
-          <input id="sl-gripper" type="range" min="-100" max="100" step="1" value="0"
-                 oninput="sliderMoveGripper(this.value)" onchange="sliderStopGripper()">
-          <span class="slider-val" id="slv-gripper">0%</span>
-        </div>
-      </div>
-    </div>
-    <div class="card" style="margin-top:12px">
-      <h3>Posicion Estimada</h3>
-      <div class="pos-bar-container" id="pos-bars">
-        <div class="pos-row"><span class="pos-label">Hombro</span><div class="pos-track"><div class="pos-fill" id="pos-shoulder" style="width:50%"></div></div><span class="pos-val" id="pv-shoulder">50%</span></div>
-        <div class="pos-row"><span class="pos-label">Codo</span><div class="pos-track"><div class="pos-fill" id="pos-elbow" style="width:50%"></div></div><span class="pos-val" id="pv-elbow">50%</span></div>
-        <div class="pos-row"><span class="pos-label">Muneca</span><div class="pos-track"><div class="pos-fill" id="pos-wrist" style="width:50%"></div></div><span class="pos-val" id="pv-wrist">50%</span></div>
-        <div class="pos-row"><span class="pos-label">Pinza</span><div class="pos-track"><div class="pos-fill" id="pos-gripper" style="width:50%"></div></div><span class="pos-val" id="pv-gripper">50%</span></div>
-      </div>
-    </div>
-  </div>
-
-  <div class="side">
-    <div class="card" id="legacy-autonomy-card">
-      <h3>Controles</h3>
-      <div class="btn-grid">
-        <button class="btn btn-start" onclick="apiPost('/api/iniciar')">Iniciar</button>
-        <button class="btn btn-pause" onclick="apiPost('/api/pausar')">Pausar</button>
-        <button class="btn btn-resume" onclick="apiPost('/api/reanudar')">Reanudar</button>
-        <button class="btn btn-stop" onclick="apiPost('/api/detener')">Detener</button>
-        <button class="btn btn-home" onclick="apiPost('/api/home')">Home</button>
-        <button class="btn btn-scan" onclick="apiPost('/api/escanear')">Escanear</button>
-        <button class="btn btn-calib" onclick="apiPost('/api/calibrar_servos')">Calibrar Servos</button>
-        <button class="btn btn-calib-color" onclick="apiPost('/api/calibrar_color')">Calibrar Color</button>
-        <button class="btn btn-emergency" onclick="apiPost('/api/emergencia')">EMERGENCIA</button>
-        <button class="btn btn-reset-emerg" id="btn-reset-emerg" style="display:none;grid-column:1/-1;background:#7c3aed;color:#fff;padding:10px;font-size:.85rem;font-weight:600;border:none;border-radius:8px;cursor:pointer" onclick="resetEmergencia()">Reset Emergencia</button>
-      </div>
-      <div class="safe-status" id="safe-status" style="font-size:.72rem;margin-top:6px;min-height:16px"></div>
-      <div class="calib-status" id="calib-status"></div>
-      <div class="progress-bar" id="calib-progress-bar" style="display:none"><div class="progress-fill" id="calib-progress-fill" style="width:0%"></div></div>
-    </div>
-
-    <div class="card">
-      <h3>Estadisticas</h3>
-      <div class="stat-grid">
-        <div class="stat"><div class="val" id="st-detectados">0</div><div class="lbl">Detectados</div></div>
-        <div class="stat"><div class="val" id="st-exitos">0</div><div class="lbl">Agarres OK</div></div>
-        <div class="stat"><div class="val" id="st-fallos">0</div><div class="lbl">Fallos</div></div>
-        <div class="stat"><div class="val" id="st-depositos">0</div><div class="lbl">Depositos</div></div>
-        <div class="stat"><div class="val" id="st-recuperados">0</div><div class="lbl">Errores Recup.</div></div>
-        <div class="stat"><div class="val" id="st-ciclos">0</div><div class="lbl">Ciclos</div></div>
-      </div>
-    </div>
-
-    <div class="card">
-      <h3>Objetos Detectados</h3>
-      <div class="obj-list" id="obj-list"><em style="color:#64748b">Sin datos</em></div>
-    </div>
-
-    <div class="card">
-      <h3>Recipientes</h3>
-      <div class="rec-list" id="rec-list"><em style="color:#64748b">Sin datos</em></div>
-    </div>
-
-    <div class="card">
-      <h3>Historial</h3>
-      <div class="log-box" id="log-box">Esperando eventos...</div>
-    </div>
-  </div>
-</div>
-
-<div class="checklist-wrap">
-  <div class="card checklist-card">
-    <div class="checklist-top">
-      <h3 style="margin:0">Checklist puesta en marcha</h3>
-      <span class="checklist-progress" id="checklist-progress">0/0 completados</span>
-    </div>
-    <p style="font-size:.75rem;color:#64748b;margin-bottom:12px;line-height:1.45">
-      Lo que el repositorio no puede cerrar sin tu mesa: calibración, YOLO acorde a tus piezas, seguridad y audio.
-      Las casillas se guardan en <strong>este navegador</strong> (localStorage).
-    </p>
-    <div class="checklist-actions" style="margin-bottom:14px">
-      <a class="btn-link" href="/docs/puesta_en_marcha" target="_blank" rel="noopener">Guía completa (markdown)</a>
-      <button type="button" class="btn-ghost" id="checklist-reset">Restablecer casillas</button>
-    </div>
-    <div class="checklist-group">
-      <h4>1 · Calibración servos y color</h4>
-      <label class="checklist-row"><input type="checkbox" data-id="c1-1"> Revisar <code>servo_config_legacy.json</code> (tipo servo, pulsos min/máx).</label>
-      <label class="checklist-row"><input type="checkbox" data-id="c1-2"> Calibrar servos desde la web (topes reales).</label>
-      <label class="checklist-row"><input type="checkbox" data-id="c1-3"> Probar HOME y manual: sin forzar mecánica ni vibración excesiva.</label>
-      <label class="checklist-row"><input type="checkbox" data-id="c1-4"> Calibrar color con la misma luz que usarás en producción.</label>
-      <label class="checklist-row"><input type="checkbox" data-id="c1-5"> Escanear con recipientes fijos: lista de recipientes estable.</label>
-      <label class="checklist-row"><input type="checkbox" data-id="c1-6"> Con brazo real: <code>PERMITIR_DETECCION_SIMULADA=False</code> (no inventar objetos si falla la visión).</label>
-    </div>
-    <div class="checklist-group">
-      <h4>2 · YOLO y clases</h4>
-      <label class="checklist-row"><input type="checkbox" data-id="c2-1"> Saber qué clases predice el modelo actual (p. ej. COCO).</label>
-      <label class="checklist-row"><input type="checkbox" data-id="c2-2"> Si tus objetos son otros: plan de modelo propio / LAB_WORKBENCH.</label>
-      <label class="checklist-row"><input type="checkbox" data-id="c2-3"> Rellenar <code>YOLO_LAB_CLASE_A_COLOR</code> si usas clases propias.</label>
-      <label class="checklist-row"><input type="checkbox" data-id="c2-4"> Ajustar <code>CONFIANZA_MINIMA_DETECCION</code> según falsos positivos.</label>
-      <label class="checklist-row"><input type="checkbox" data-id="c2-5"> Valorar subir <code>imgsz</code> si las piezas son muy pequeñas (más carga CPU).</label>
-    </div>
-    <div class="checklist-group">
-      <h4>3 · Mecánica y seguridad</h4>
-      <label class="checklist-row"><input type="checkbox" data-id="c3-1"> Fuentes adecuadas (servos, incluida base MG996R) y masa común correcta.</label>
-      <label class="checklist-row"><input type="checkbox" data-id="c3-2"> Zona de trabajo despejada (personas y cables fuera de alcance).</label>
-      <label class="checklist-row"><input type="checkbox" data-id="c3-3"> Probar parada de emergencia y conocer el comportamiento.</label>
-      <label class="checklist-row"><input type="checkbox" data-id="c3-4"> Primera sesión con velocidad autónoma conservadora.</label>
-      <label class="checklist-row"><input type="checkbox" data-id="c3-5"> Revisar cableado I2C, base en canal 4 y CSI (CONEXIONES.md).</label>
-    </div>
-    <div class="checklist-group">
-      <h4>4 · Audio (si usas voz)</h4>
-      <label class="checklist-row"><input type="checkbox" data-id="c4-1"> Pruebas <code>arecord</code> / <code>aplay</code> / <code>espeak-ng</code> (HARDWARE_AUDIO.md).</label>
-      <label class="checklist-row"><input type="checkbox" data-id="c4-2"> Si hay varios micrófonos: fijar <code>VOZ_MIC_DEVICE_INDEX</code>.</label>
-      <label class="checklist-row"><input type="checkbox" data-id="c4-3"> Internet estable si usas reconocimiento Google.</label>
-      <label class="checklist-row"><input type="checkbox" data-id="c4-4"> <code>requirements-voice.txt</code> + paquetes del sistema instalados.</label>
-    </div>
-    <div class="checklist-group">
-      <h4>5 · Orden sugerido (primer día)</h4>
-      <label class="checklist-row"><input type="checkbox" data-id="c5-1"> Cableado y alimentación antes de movimiento autónomo.</label>
-      <label class="checklist-row"><input type="checkbox" data-id="c5-2"> Web, vídeo y control manual antes de modo autónomo.</label>
-      <label class="checklist-row"><input type="checkbox" data-id="c5-3"> Calibrar servos y color antes de confiar en pick &amp; place.</label>
-      <label class="checklist-row"><input type="checkbox" data-id="c5-4"> Validar detección con objetos que el modelo sí conozca.</label>
-      <label class="checklist-row"><input type="checkbox" data-id="c5-5"> Audio probado antes de depurar comandos de voz.</label>
-    </div>
-  </div>
-</div>
-
-<script>
-let CAL_MODE_ACTIVE = false;
-const CHECKLIST_STORAGE_KEY = 'brazo_checklist_v1';
-function checklistLoad(){
-  try { return JSON.parse(localStorage.getItem(CHECKLIST_STORAGE_KEY) || '{}'); } catch(e){ return {}; }
-}
-function checklistSave(state){
-  localStorage.setItem(CHECKLIST_STORAGE_KEY, JSON.stringify(state));
-}
-function checklistUpdateProgress(){
-  const boxes = document.querySelectorAll('.checklist-row input[type=checkbox]');
-  let done = 0, total = 0;
-  boxes.forEach(b => { total++; if (b.checked) done++; });
-  const el = document.getElementById('checklist-progress');
-  if (el) el.textContent = done + '/' + total + ' completados';
-}
-function checklistInit(){
-  const state = checklistLoad();
-  document.querySelectorAll('.checklist-row input[type=checkbox]').forEach(cb => {
-    if (state[cb.dataset.id]) cb.checked = true;
-    cb.addEventListener('change', () => {
-      const s = checklistLoad();
-      s[cb.dataset.id] = cb.checked;
-      checklistSave(s);
-      checklistUpdateProgress();
-    });
-  });
-  checklistUpdateProgress();
-  const reset = document.getElementById('checklist-reset');
-  if (reset) reset.addEventListener('click', () => {
-    if (!confirm('Borrar el progreso del checklist en este navegador?')) return;
-    localStorage.removeItem(CHECKLIST_STORAGE_KEY);
-    document.querySelectorAll('.checklist-row input[type=checkbox]').forEach(cb => { cb.checked = false; });
-    checklistUpdateProgress();
-  });
-}
-document.addEventListener('DOMContentLoaded', checklistInit);
-
-function apiPost(url, body){
-  fetch(url,{method:'POST',headers:{'Content-Type':'application/json'},body:body?JSON.stringify(body):'{}'})
-  .then(r=>r.json()).then(d=>{if(d.msg)console.log(d.msg)}).catch(e=>console.error(e));
-}
-function manualMove(joint,dir){
-  if(CAL_MODE_ACTIVE) return;
-  apiPost('/api/mover',{joint,dir});
-}
-function moverBase(dir){
-  if(CAL_MODE_ACTIVE) return;
-  apiPost('/api/mover',{joint:'base',dir});
-}
-function calibSelect(joint){
-  apiPost('/api/calibration/select_joint',{joint});
-}
-function calibStep(dir){
-  apiPost('/api/calibration/step',{dir});
-}
-const _sliderTimers = {};
-function _debounceByKey(key, fn, ms){
-  if(_sliderTimers[key]) clearTimeout(_sliderTimers[key]);
-  _sliderTimers[key]=setTimeout(fn, ms);
-}
-function sliderMoveJoint(joint, value){
-  if(CAL_MODE_ACTIVE) return;
-  const v=Math.round(Number(value)||0);
-  const lbl=document.getElementById('slv-'+joint);
-  if(lbl) lbl.textContent=v+'°';
-  _debounceByKey('joint-'+joint, ()=>apiPost('/api/set_angle',{joint,angle:v}), 70);
-}
-function sliderMoveGripper(value){
-  if(CAL_MODE_ACTIVE) return;
-  const v=Math.round(Number(value)||0);
-  const lbl=document.getElementById('slv-gripper');
-  if(lbl) lbl.textContent=v+'%';
-  _debounceByKey('gripper-speed', ()=>apiPost('/api/gripper_continuo',{speed:v}), 70);
-}
-function sliderStopGripper(){
-  if(CAL_MODE_ACTIVE) return;
-  const sl=document.getElementById('sl-gripper');
-  const lbl=document.getElementById('slv-gripper');
-  if(sl) sl.value = 0;
-  if(lbl) lbl.textContent='0%';
-  apiPost('/api/gripper_continuo',{speed:0});
-}
-function setLegacyUiDisabled(disabled){
-  const banner=document.getElementById('cal-banner');
-  if(banner) banner.style.display = disabled ? 'block' : 'none';
-
-  // Bloquear controles legacy para evitar confusión operacional.
-  document.querySelectorAll('#legacy-manual-card button').forEach(el=>{
-    el.disabled = disabled;
-    el.style.opacity = disabled ? '0.45' : '1';
-    el.style.pointerEvents = disabled ? 'none' : 'auto';
-  });
-  document.querySelectorAll('#legacy-slider-card input, #legacy-slider-card button').forEach(el=>{
-    el.disabled = disabled;
-    el.style.opacity = disabled ? '0.45' : '1';
-    el.style.pointerEvents = disabled ? 'none' : 'auto';
-  });
-  // Controles autónomos/macros legacy bloqueados en calibración.
-  document.querySelectorAll('#legacy-autonomy-card .btn-grid .btn').forEach(el=>{
-    el.disabled = disabled;
-    el.style.opacity = disabled ? '0.45' : '1';
-    el.style.pointerEvents = disabled ? 'none' : 'auto';
-  });
-}
-function resetEmergencia(){
-  if(!confirm('¿Confirmas que el brazo está en posición segura y es seguro reanudar?'))return;
-  fetch('/api/reset_emergency',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'})
-  .then(r=>r.json()).then(d=>{console.log(d.msg)}).catch(e=>console.error(e));
-}
-
-function actualizarUI(){
-  fetch('/api/estado').then(r=>r.json()).then(d=>{
-    const badge=document.getElementById('badge-estado');
-    badge.textContent=d.estado;
-    badge.className='estado-badge estado-'+d.estado;
-
-    const pill=document.getElementById('diag-escaneo-ok');
-    const mot=document.getElementById('diag-escaneo-motivo');
-    if(pill && typeof d.ultimo_escaneo_ok==='boolean'){
-      pill.textContent=d.ultimo_escaneo_ok?'OK':'Falla';
-      pill.className='diag-pill '+(d.ultimo_escaneo_ok?'ok':'bad');
-    }
-    if(mot && d.ultimo_escaneo_motivo!==undefined){
-      mot.textContent=d.ultimo_escaneo_motivo;
-    }
-
-    const vozOk=document.getElementById('voz-nota-ok');
-    const vozWarn=document.getElementById('voz-nota-warn');
-    if(vozOk && vozWarn){
-      const vcfg=!!d.voz_config_habilitada;
-      const vrun=!!d.voz_activa;
-      if(!vcfg){
-        vozOk.style.display='none';
-        vozWarn.style.display='none';
-      } else if(vrun){
-        vozOk.style.display='block';
-        vozWarn.style.display='none';
-      } else {
-        vozOk.style.display='none';
-        vozWarn.style.display='block';
-      }
-    }
-
-    const s=d.estadisticas;
-    document.getElementById('st-detectados').textContent=s.objetos_detectados;
-    document.getElementById('st-exitos').textContent=s.agarres_exitosos;
-    document.getElementById('st-fallos').textContent=s.agarres_fallidos;
-    document.getElementById('st-depositos').textContent=s.depositos_exitosos;
-    document.getElementById('st-recuperados').textContent=s.errores_recuperados;
-    document.getElementById('st-ciclos').textContent=s.ciclos_completados;
-
-    if(d.posiciones){
-      const servoRangeDeg={shoulder:270,elbow:270,wrist:180,gripper:360};
-      ['shoulder','elbow','wrist','gripper'].forEach(j=>{
-        const v=d.posiciones[j];
-        if(v!==undefined){
-          const pct=Math.round(v*100);
-          const deg=Math.round(v*(servoRangeDeg[j]||180));
-          const bar=document.getElementById('pos-'+j);
-          const lbl=document.getElementById('pv-'+j);
-          if(bar)bar.style.width=pct+'%';
-          if(lbl)lbl.textContent=(j==='gripper')?(deg+'° (cont)'):(deg+'°');
-        }
-      });
-    }
-    if(d.safe_angles){
-      ['base','shoulder','elbow','wrist'].forEach(j=>{
-        const av=d.safe_angles[j];
-        if(av===undefined) return;
-        const slider=document.getElementById('sl-'+j);
-        const lbl=document.getElementById('slv-'+j);
-        if(slider && document.activeElement !== slider){
-          const sv=Math.round(av);
-          slider.value=sv;
-          if(lbl) lbl.textContent=sv+'°';
-        }
-      });
-    }
-    const calMode=document.getElementById('cal-mode');
-    const calRun=document.getElementById('cal-runtime');
-    const calJoint=document.getElementById('cal-joint');
-    CAL_MODE_ACTIVE = !!d.calibration_mode;
-    setLegacyUiDisabled(CAL_MODE_ACTIVE);
-    if(calMode) calMode.textContent=d.calibration_mode?'ON':'OFF';
-    if(calRun) calRun.textContent=d.calibration_runtime||'IDLE';
-    if(calJoint) calJoint.textContent=d.calibration_active_joint||'-';
-
-    if(d.calibracion && d.calibracion.activo){
-      document.getElementById('calib-status').textContent='Calibrando: '+d.calibracion.servo+' ('+d.calibracion.fase+')';
-      document.getElementById('calib-progress-bar').style.display='block';
-      document.getElementById('calib-progress-fill').style.width=d.calibracion.progreso+'%';
-    } else {
-      document.getElementById('calib-status').textContent='';
-      document.getElementById('calib-progress-bar').style.display='none';
-    }
-
-    const ol=document.getElementById('obj-list');
-    if(d.objetos.length){
-      ol.innerHTML=d.objetos.map(o=>`<div class="obj-item"><span><span class="color-dot dot-${o.color}"></span>${o.clase}</span><span>${(o.confianza*100).toFixed(0)}%</span></div>`).join('');
-    } else {ol.innerHTML='<em style="color:#64748b">Ninguno</em>'}
-
-    const rl=document.getElementById('rec-list');
-    if(d.recipientes.length){
-      rl.innerHTML=d.recipientes.map(r=>`<div class="rec-item"><span><span class="color-dot dot-${r.color}"></span>${r.color}</span><span>${r.depositados} obj</span></div>`).join('');
-    } else {rl.innerHTML='<em style="color:#64748b">Ninguno</em>'}
-
-    const lb=document.getElementById('log-box');
-    if(d.historial_reciente.length){
-      lb.innerHTML=d.historial_reciente.slice(-8).reverse().map(h=>`<div>${h.timestamp.split('T')[1].split('.')[0]} [${h.tipo}] ${JSON.stringify(h.datos).substring(0,80)}</div>`).join('');
-    }
-
-    // Estado SafeController
-    const safeStatus=document.getElementById('safe-status');
-    const btnReset=document.getElementById('btn-reset-emerg');
-    if(safeStatus){
-      if(d.safe_emergency){
-        safeStatus.innerHTML='<span style="color:#ef4444;font-weight:700">⚡ SAFE: Emergency Stop activo</span>';
-        if(btnReset)btnReset.style.display='block';
-      } else {
-        const simTag=d.safe_simulation?' <span style="color:#f59e0b">[SIM]</span>':'';
-        safeStatus.innerHTML='<span style="color:#22c55e">&#10003; SAFE: OK</span>'+simTag;
-        if(btnReset)btnReset.style.display='none';
-      }
-    }
-  }).catch(()=>{});
-}
-
 setInterval(actualizarUI,1500);
 actualizarUI();
 </script>

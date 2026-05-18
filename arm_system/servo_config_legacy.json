@@ -46,17 +46,17 @@
     "canal": 3,
     "tipo_servo": "continuo_360",
     "pulso_min": 1000,
-    "pulso_max": 2000,
+    "pulso_max": 2200,
     "pulso_neutral": 1500,
     "pulso_hold": 1500,
-    "pulso_abrir": 1400,
-    "pulso_cerrar": 1600,
+    "pulso_abrir": 1300,
+    "pulso_cerrar": 2050,
     "rango_pulso": 100,
     "velocidad_min": 0.2,
     "invertido": false,
     "tiempo_max_abrir": 2.0,
-    "tiempo_max_cerrar": 2.0,
-    "notas": "MG996R continuo 360 en garra: abrir/cerrar por direccion/tiempo con pulso calibrado 1400/1600."
+    "tiempo_max_cerrar": 4.0,
+    "notas": "MG996R en la pinza usado como servo continuo 360°; cerrar con fuerza máxima usando pulso 2050."
   },
   "base": {
     "canal": 4,
