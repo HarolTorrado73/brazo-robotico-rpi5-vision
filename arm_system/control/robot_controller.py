@@ -250,13 +250,28 @@ class ControladorServo:
             p = p_max + p_min - p
         return int(max(p_min, min(p_max, round(p))))
 
+    def _safe_set_channel_duty(self, channel, duty_cycle, retries=3, retry_delay=0.05):
+        """Escribe duty_cycle al PCA9685 con reintentos en caso de errores I2C transitorios."""
+        for intento in range(1, retries + 1):
+            try:
+                self.pca.channels[channel].duty_cycle = duty_cycle
+                return
+            except OSError as e:
+                log.warning(
+                    f"[Servo] Error I2C canal={channel}, duty={duty_cycle}: {e} "
+                    f"(intento {intento}/{retries})"
+                )
+                if intento == retries:
+                    raise
+                time.sleep(retry_delay)
+
     def aplicar_pulso(self, nombre, pulso_us):
         """Aplica un pulso directo en microsegundos a un servo."""
         if nombre not in self.servos:
             return
         servo = self.servos[nombre]
         pulso_us = max(servo['pulso_min'], min(servo['pulso_max'], pulso_us))
-        self.pca.channels[servo['canal']].duty_cycle = self._us_a_duty(pulso_us)
+        self._safe_set_channel_duty(servo['canal'], self._us_a_duty(pulso_us))
 
     def mover_por_tiempo(self, nombre, direccion, tiempo_segundos, velocidad=0.5):
         """Mueve un servo: posicional (~180°) interpola ángulo en [0,1]; continuo mantiene lógica legacy.
@@ -333,12 +348,12 @@ class ControladorServo:
         inv_tag = " [INV]" if servo.get('invertido') else ""
         log.info(f"[Servo] {nombre}{inv_tag} (180°): dir={direccion} t_cmd={tiempo_segundos:.2f}s "
                  f"pulso={pulso}us pos={servo['posicion_estimada']:.2f}")
-        self.pca.channels[servo['canal']].duty_cycle = self._us_a_duty(pulso)
+        self._safe_set_channel_duty(servo['canal'], self._us_a_duty(pulso))
         servo['ultimo_pulso'] = pulso
 
         asent = max(0.06, min(float(tiempo_segundos), self.TIEMPO_ASENTAMIENTO_MAX))
         time.sleep(asent)
-        self.pca.channels[servo['canal']].duty_cycle = self._us_a_duty(pulso)
+        self._safe_set_channel_duty(servo['canal'], self._us_a_duty(pulso))
         log.info(f"[Servo] {nombre}: manteniendo {pulso}us (pos={servo['posicion_estimada']:.2f})")
 
     def _mover_por_tiempo_continuo(self, nombre, servo, direccion, tiempo_segundos, velocidad):
@@ -398,7 +413,7 @@ class ControladorServo:
         inv_tag = " [INV]" if invertido else ""
         log.info(f"[Servo] {nombre}{inv_tag}: dir={direccion} t={tiempo_segundos:.2f}s "
                  f"pulso={pulso:.0f}us vel={vel_efectiva:.2f} pos={servo['posicion_estimada']:.2f}")
-        self.pca.channels[servo['canal']].duty_cycle = self._us_a_duty(pulso)
+        self._safe_set_channel_duty(servo['canal'], self._us_a_duty(pulso))
 
         time.sleep(tiempo_segundos)
 
@@ -413,7 +428,7 @@ class ControladorServo:
                     servo['posicion_estimada'] = max(0.0, servo['posicion_estimada'] - delta)
 
         pulso_hold = servo['pulso_hold']
-        self.pca.channels[servo['canal']].duty_cycle = self._us_a_duty(pulso_hold)
+        self._safe_set_channel_duty(servo['canal'], self._us_a_duty(pulso_hold))
         servo['ultimo_pulso'] = pulso_hold
         log.info(f"[Servo] {nombre}: STOP -> {pulso_hold}us "
                  f"(pos={servo['posicion_estimada']:.2f})")
