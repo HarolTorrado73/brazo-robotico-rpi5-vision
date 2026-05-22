@@ -1065,11 +1065,12 @@ class ControladorRobotico:
             # 4) Codo vuelve a elevarse lentamente hasta 92°
             self._move_servo_to_angle('elbow', 92.0, step_deg=2.0, delay_between_steps=0.03, velocidad=0.35)
 
-            # 5) Pinza: secuencia rápida +360 then -360 (simulada por tiempos)
+            # 5) Pinza: secuencia rápida +360 then -360 (simulada por tiempos) + pausa de 3s
             try:
                 self.controlador_servo.mover_por_tiempo('gripper', 1, 0.9, velocidad=1.0)
                 time.sleep(0.15)
                 self.controlador_servo.mover_por_tiempo('gripper', -1, 0.9, velocidad=1.0)
+                time.sleep(3.0)  # Pausa para asegurar agarre
             except Exception:
                 pass
 
@@ -1098,11 +1099,12 @@ class ControladorRobotico:
                 self._move_servo_to_angle('elbow', e_deg, step_deg=5.0, delay_between_steps=0.02, velocidad=0.45)
                 self._move_servo_to_angle('wrist', w_deg, step_deg=3.0, delay_between_steps=0.01, velocidad=0.4)
 
-            # 9) Cuando extendido, pinza otra vez +360/-360 (simulada)
+            # 9) Cuando extendido, pinza otra vez +360/-360 (simulada) + pausa de 3s
             try:
                 self.controlador_servo.mover_por_tiempo('gripper', 1, 0.9, velocidad=1.0)
-                time.sleep(0.12)
+                time.sleep(0.15)
                 self.controlador_servo.mover_por_tiempo('gripper', -1, 0.9, velocidad=1.0)
+                time.sleep(3.0)  # Pausa para liberar objeto
             except Exception:
                 pass
 
