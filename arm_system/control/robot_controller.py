@@ -914,6 +914,188 @@ class ControladorRobotico:
         except Exception as e:
             log.error(f"Error en posicion escaneo: {e}")
 
+    # --- Movimientos basados en objetivos angulares (helpers no intrusivos) ------
+    def _deg_to_norm(self, deg: float) -> float:
+        """Convierte grados (0..180) a posicion normalizada [0.0, 1.0]."""
+        try:
+            d = float(deg)
+        except Exception:
+            return 0.5
+        return max(0.0, min(1.0, d / 180.0))
+
+    def _move_servo_to_angle(self, nombre: str, target_deg: float, step_deg: float = 5.0, delay_between_steps: float = 0.02, velocidad: float = 0.5):
+        """Mueve un servo posicional de forma progresiva hacia un objetivo en grados.
+
+        Usa `mover_por_tiempo` en pasos pequeños calculando el tiempo necesario
+        a partir de `tiempo_max_positivo`/`tiempo_max_negativo`.
+        """
+        if nombre not in self.controlador_servo.servos:
+            log.warning(f"_move_servo_to_angle: servo '{nombre}' no configurado")
+            return
+
+        servo = self.controlador_servo.servos[nombre]
+        if not self.controlador_servo._es_servo_posicional(servo):
+            log.warning(f"_move_servo_to_angle: servo '{nombre}' no es posicional")
+            return
+
+        curr = float(servo.get('posicion_estimada', 0.5))
+        target_norm = self._deg_to_norm(target_deg)
+        delta = target_norm - curr
+        if abs(delta) < 1e-4:
+            return
+
+        step_norm = abs(step_deg) / 180.0
+        direction = 1 if delta > 0 else -1
+
+        # Determinar tiempos maximos para la direccion
+        t_max_pos = float(servo.get('tiempo_max_positivo', 1.0))
+        t_max_neg = float(servo.get('tiempo_max_negativo', 1.0))
+
+        remaining = abs(delta)
+        while remaining > 1e-6:
+            this_step = min(step_norm, remaining)
+            t_max_dir = t_max_pos if direction > 0 else t_max_neg
+            tiempo = max(0.0, this_step * t_max_dir)
+            # En caso de tiempo casi 0, usar un mínimo pequeño para que haya efecto
+            tiempo = max(tiempo, 0.005)
+            try:
+                self.controlador_servo.mover_por_tiempo(nombre, direction, tiempo, velocidad)
+            except Exception as e:
+                log.warning(f"Error moviendo servo '{nombre}' por tiempo: {e}")
+                return
+            time.sleep(delay_between_steps)
+            remaining -= this_step
+
+    def secuencia_personalizada_autonoma(self):
+        """Secuencia autónoma personalizada (movimientos suaves y sincronizados).
+
+        Ejecuta la secuencia descrita por el usuario: posiciones iniciales,
+        barrido de base (0→180), sincronización con codo/muñeca, acciones de
+        pinza y retorno, y fase de extensión final con ajuste dinámico de muñeca.
+        """
+        log.info("Iniciando secuencia personalizada autónoma")
+        try:
+            # 1) Posición inicial estable
+            init = {
+                'base': 10.0,
+                'shoulder': 139.0,
+                'elbow': 100.0,
+                'wrist': 170.0,
+            }
+            for nombre, deg in init.items():
+                self._move_servo_to_angle(nombre, deg, step_deg=5.0, delay_between_steps=0.03, velocidad=0.4)
+
+            # Gripper a neutral/abierto
+            try:
+                self.controlador_servo.mover_por_tiempo('gripper', 1, 1.0, velocidad=0.6)
+            except Exception:
+                pass
+
+            # 2) Barrido progresivo de la base: 0 -> 180 en pasos de 5°
+            # Mientras tanto, el codo desciende a 84° sincronizado
+            start_elbow = 100.0
+            target_elbow = 84.0
+            steps = list(range(0, 181, 5))
+            # Asegurar base en 0 primero
+            self._move_servo_to_angle('base', 0.0, step_deg=5.0, delay_between_steps=0.02, velocidad=0.45)
+
+            # Sincronizar barrido de base y descenso del codo manteniendo HW_LOCK
+            try:
+                hw = _hw_bus
+                if hw is not None and hw.HW_LOCK.acquire(timeout=1.0):
+                    try:
+                        # Calcular pasos normalizados
+                        total_steps = max(1, len(steps))
+                        for idx, deg in enumerate(steps):
+                            prop = idx / max(1, total_steps - 1)
+                            # Base: convertir a posicion normalizada
+                            base_norm = max(0.0, min(1.0, deg / 180.0))
+                            # Elbow: interpolar
+                            elbow_deg = start_elbow + (target_elbow - start_elbow) * prop
+                            elbow_norm = max(0.0, min(1.0, elbow_deg / 180.0))
+
+                            # Aplicar pulsos directamente y actualizar posicion_estimada
+                            try:
+                                if 'base' in self.controlador_servo.servos:
+                                    p_base = self.controlador_servo._pulso_desde_posicion(self.controlador_servo.servos['base'], base_norm)
+                                    self.controlador_servo.aplicar_pulso('base', p_base)
+                                    self.controlador_servo.servos['base']['posicion_estimada'] = base_norm
+                                if 'elbow' in self.controlador_servo.servos:
+                                    p_el = self.controlador_servo._pulso_desde_posicion(self.controlador_servo.servos['elbow'], elbow_norm)
+                                    self.controlador_servo.aplicar_pulso('elbow', p_el)
+                                    self.controlador_servo.servos['elbow']['posicion_estimada'] = elbow_norm
+                            except Exception:
+                                pass
+
+                            # Pequeña espera para mantener movimiento suave
+                            time.sleep(0.04)
+                    finally:
+                        try:
+                            hw.HW_LOCK.release()
+                        except Exception:
+                            pass
+                else:
+                    # Fallback: si no podemos adquirir lock, hacemos movimientos individuales suaves
+                    for deg in steps:
+                        self._move_servo_to_angle('base', float(deg), step_deg=5.0, delay_between_steps=0.02, velocidad=0.45)
+                        prop = deg / 180.0
+                        elbow_deg = start_elbow + (target_elbow - start_elbow) * prop
+                        self._move_servo_to_angle('elbow', elbow_deg, step_deg=3.0, delay_between_steps=0.01, velocidad=0.5)
+            except Exception as e:
+                log.warning(f"Sincronización barrido base/elbow falló: {e}")
+
+            # 3) Muñeca descendiendo gradualmente hasta ~20°
+            self._move_servo_to_angle('wrist', 20.0, step_deg=4.0, delay_between_steps=0.02, velocidad=0.45)
+
+            # 4) Codo vuelve a elevarse lentamente hasta 92°
+            self._move_servo_to_angle('elbow', 92.0, step_deg=2.0, delay_between_steps=0.03, velocidad=0.35)
+
+            # 5) Pinza: secuencia rápida +360 then -360 (simulada por tiempos)
+            try:
+                self.controlador_servo.mover_por_tiempo('gripper', 1, 0.9, velocidad=1.0)
+                time.sleep(0.15)
+                self.controlador_servo.mover_por_tiempo('gripper', -1, 0.9, velocidad=1.0)
+            except Exception:
+                pass
+
+            # 6) Después agarre: codo baja rápidamente a 80°, luego ajusta a 72°, hombro→114°
+            self._move_servo_to_angle('elbow', 80.0, step_deg=6.0, delay_between_steps=0.02, velocidad=0.6)
+            self._move_servo_to_angle('shoulder', 114.0, step_deg=5.0, delay_between_steps=0.03, velocidad=0.45)
+            self._move_servo_to_angle('elbow', 72.0, step_deg=3.0, delay_between_steps=0.02, velocidad=0.4)
+
+            # 7) Base retorna 180 -> 0 progresivo
+            for deg in reversed(steps):
+                self._move_servo_to_angle('base', float(deg), step_deg=5.0, delay_between_steps=0.02, velocidad=0.45)
+
+            # 8) Fase de extension completa: hombro aumenta, codo disminuye coordinado
+            shoulder_start = 114.0
+            shoulder_target = 170.0
+            elbow_start = 72.0
+            elbow_target = 10.0
+            total_steps_ext = int(abs(shoulder_target - shoulder_start) // 5) + 1
+            for i in range(total_steps_ext + 1):
+                prop = i / max(1, total_steps_ext)
+                s_deg = shoulder_start + (shoulder_target - shoulder_start) * prop
+                e_deg = elbow_start + (elbow_target - elbow_start) * prop
+                # Muñeca compensa dinámicamente entre 20..30° según progreso
+                w_deg = 20.0 + prop * 10.0
+                self._move_servo_to_angle('shoulder', s_deg, step_deg=5.0, delay_between_steps=0.02, velocidad=0.45)
+                self._move_servo_to_angle('elbow', e_deg, step_deg=5.0, delay_between_steps=0.02, velocidad=0.45)
+                self._move_servo_to_angle('wrist', w_deg, step_deg=3.0, delay_between_steps=0.01, velocidad=0.4)
+
+            # 9) Cuando extendido, pinza otra vez +360/-360 (simulada)
+            try:
+                self.controlador_servo.mover_por_tiempo('gripper', 1, 0.9, velocidad=1.0)
+                time.sleep(0.12)
+                self.controlador_servo.mover_por_tiempo('gripper', -1, 0.9, velocidad=1.0)
+            except Exception:
+                pass
+
+            log.info("Secuencia personalizada completada")
+        except Exception as e:
+            log.error(f"Error en secuencia personalizada: {e}")
+            self._posicion_segura()
+
     def _calibrar_servo_180(self, nombre, servo, _notificar, idx, total, vel_cal):
         """Calibra tiempos de recorrido en servos ~180° (pasos hasta tope lógico 0/1)."""
         dt = 0.14

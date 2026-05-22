@@ -90,6 +90,7 @@ _asistente_voz = None
 _safe_ctrl: SafeController = None
 
 
+
 def obtener_cerebro():
     global cerebro
     if cerebro is None:
@@ -110,6 +111,10 @@ def obtener_safe_ctrl() -> SafeController:
     if _safe_ctrl is None:
         _safe_ctrl = SafeController()
     return _safe_ctrl
+
+
+# Nota: las rutas de visión quedan deshabilitadas por defecto para evitar
+# cambios de UI no solicitados y dependencias adicionales.
 
 
 def _anunciar_voz(frase: str) -> None:
@@ -1054,6 +1059,26 @@ def api_emergencia():
     return jsonify({'ok': True, 'msg': 'PARADA DE EMERGENCIA - Todos los servos apagados'})
 
 
+@app.route('/api/start_custom_sequence', methods=['POST'])
+def api_start_custom_sequence():
+    """Inicia la secuencia personalizada definida en ControladorRobotico en un hilo."""
+    if _is_calibration_enabled():
+        return _calibration_blocked_response('/api/start_custom_sequence')
+    c = obtener_cerebro()
+    if not c or not getattr(c, 'robot', None):
+        return jsonify({'ok': False, 'msg': 'Cerebro o robot no inicializado'}), 500
+
+    def _run():
+        try:
+            c.robot.secuencia_personalizada_autonoma()
+        except Exception as e:
+            log.error('Error en secuencia personalizada: %s', e)
+
+    hilo = threading.Thread(target=_run, daemon=True)
+    hilo.start()
+    return jsonify({'ok': True, 'msg': 'Secuencia personalizada iniciada'})
+
+
 @app.route('/api/reset_emergency', methods=['POST'])
 def api_reset_emergency():
     """
@@ -1627,6 +1652,24 @@ html{scroll-behavior:smooth}
       <h3>⚠️ Emergencia</h3>
       <button class="btn" style="width:100%;background:linear-gradient(135deg,#dc2626,#ef4444);color:#fff;border:1px solid #ef4444;font-weight:800" onclick="apiPost('/api/emergencia')">🛑 PARADA TOTAL</button>
     </div>
+
+        <div class="card">
+            <h3>🎥 Visión Avanzada (YOLO)</h3>
+            <div style="margin-bottom:8px">
+                <img id="vision-processed" src="/video_feed_processed" alt="Vision procesada" style="width:100%;border-radius:8px;max-height:220px;object-fit:cover;background:#000">
+            </div>
+            <div style="display:grid;gap:8px">
+                <label style="font-size:.8rem;color:#cbd5e1">Brillo <input id="vs-brightness" type="range" min="-2" max="2" step="0.1" value="0" oninput="vision_update('brightness', this.value)"></label>
+                <label style="font-size:.8rem;color:#cbd5e1">Contraste <input id="vs-contrast" type="range" min="0.2" max="3" step="0.05" value="1" oninput="vision_update('contrast', this.value)"></label>
+                <label style="font-size:.8rem;color:#cbd5e1">Saturación <input id="vs-saturation" type="range" min="0" max="3" step="0.05" value="1" oninput="vision_update('saturation', this.value)"></label>
+                <label style="font-size:.8rem;color:#cbd5e1">FPS <input id="vs-fps" type="range" min="1" max="30" step="1" value="12" oninput="vision_update('fps', this.value)"></label>
+                <label style="font-size:.8rem;color:#cbd5e1">YOLO umbral <input id="vs-yolo" type="range" min="0.1" max="0.95" step="0.01" value="0.55" oninput="vision_update('yolo_conf_threshold', this.value)"></label>
+            </div>
+            <div style="display:flex;gap:8px;margin-top:8px">
+                <button class="btn-sm" onclick="fetchVisionSettings()">Cargar ajustes</button>
+                <button class="btn-sm" style="background:#16a34a" onclick="startCustomSequence()">Iniciar Secuencia Autónoma</button>
+            </div>
+        </div>
   </div>
 </div>
 
@@ -1661,6 +1704,30 @@ function sliderStopGripper(){
 function resetEmergencia(){
   if(!confirm('¿Confirmas que el brazo está seguro? Se reactivarán los movimientos.'))return;
   apiPost('/api/reset_emergency');
+}
+// ------------ Vision controls ---------------------------------
+function vision_update(key, value){
+    const body = {};
+    // try to coerce numeric values
+    const n = Number(value);
+    body[key] = isNaN(n) ? value : n;
+    apiPost('/api/vision/settings', body);
+}
+
+function fetchVisionSettings(){
+    fetch('/api/vision/settings').then(r=>r.json()).then(d=>{
+        if(!d.ok) return;
+        const s = d.settings || {};
+        ['brightness','contrast','saturation','fps','yolo_conf_threshold'].forEach(k=>{
+            const el = document.getElementById('vs-'+k.replace('_conf_threshold','')) || document.getElementById('vs-'+k);
+            if(el && s[k]!==undefined) el.value = s[k];
+        });
+    }).catch(e=>console.error(e));
+}
+
+function startCustomSequence(){
+    if(!confirm('Iniciar secuencia autónoma personalizada? Asegure que el área esté libre.')) return;
+    apiPost('/api/start_custom_sequence');
 }
 function actualizarUI(){
   fetch('/api/estado').then(r=>r.json()).then(d=>{
