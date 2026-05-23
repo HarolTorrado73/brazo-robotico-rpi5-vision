@@ -42,7 +42,8 @@ Brazo robótico autónomo que **detecta objetos con YOLO**, **clasifica por colo
 - **Python 3** con `venv`; herramientas del sistema: `i2c-tools`, dependencias de cámara según [PUESTA_EN_MARCHA.md](PUESTA_EN_MARCHA.md).
 - **Hardware:** PCA9685, servos (incluida **base MG996R** ~180° en canal 4), cámara CSI (p. ej. Arducam) y fuente adecuada.
 
-En Windows puedes instalar dependencias “puras” de Python para editar código; el control de servos/cámara está pensado para **Linux en la Pi**.
+Este proyecto se ejecuta en **Raspberry Pi OS en la Pi**. El control de servos y la cámara no está diseñado para Windows; solo el desarrollo/edición de código puede hacerse en Windows si lo deseas.
+
 
 ## Instalación
 
@@ -53,7 +54,7 @@ sudo raspi-config nonint do_i2c 0
 sudo raspi-config nonint do_camera 0
 
 python3 -m venv venv --system-site-packages
-source venv/bin/activate   # En Windows: venv\Scripts\activate
+source venv/bin/activate
 pip install -r requirements.txt
 ```
 
@@ -62,11 +63,18 @@ Voz (opcional): `sudo apt install -y espeak-ng portaudio19-dev alsa-utils` y `pi
 ## Uso rápido
 
 ```bash
-cd arm_system
-python autonomous_web.py
+cd ~/Downloads/BrazoRoboticoConIA/BrazoRoboticoConIA-v2
+source venv/bin/activate
+python3 -m arm_system.autonomous_web
 ```
 
-Abre en el navegador: `http://<IP_DE_LA_RASPBERRY>:5000` (incluye checklist de puesta en marcha y enlace a la guía en `/docs/puesta_en_marcha`).
+Abre en el navegador desde la Raspberry Pi o desde otra máquina en la misma red:
+
+```text
+http://<IP_DE_LA_RASPBERRY>:5000
+```
+
+Esta interfaz solo se ejecuta en la Raspberry Pi con hardware conectado y no está destinada a correr el runtime de servos/cámara en Windows.
 
 **Prueba mínima del brazo por ángulos** (`ArmController`, solo en la Pi): desde la raíz del repositorio, `python3 test_motor.py` (solo base) o `python3 test_grados_servos.py` (modo interactivo y rangos según `servo_config.json`).
 

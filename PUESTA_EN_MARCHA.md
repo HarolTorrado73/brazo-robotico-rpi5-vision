@@ -1,5 +1,7 @@
 # Puesta en marcha real: lo que el repositorio no puede “terminar” por ti
 
+> Este proyecto se ejecuta en **Raspberry Pi 5 / Raspberry Pi OS**. No está pensado para ejecutar la pila de servos y cámara en Windows.
+
 El código en este repo es **software listo para integrar**, pero un brazo robótico **no está al 100 %** hasta que lo validas **en tu mesa**, con **tu** luz, **tus** objetos y **tu** cableado. Esto no es un fallo del proyecto: es inherente a cualquier sistema físico.
 
 Usa este documento como **lista de comprobación** antes de confiar en modo autónomo o en voz.
