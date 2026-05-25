@@ -1007,9 +1007,9 @@ class ControladorRobotico:
                 pass
 
             # 2) Barrido progresivo de la base: 0 -> 180 en pasos de 5°
-            # Mientras tanto, el codo desciende a 84° sincronizado
+            # Mientras tanto, el codo desciende a 80° sincronizado
             start_elbow = 100.0
-            target_elbow = 84.0
+            target_elbow = 80.0
             steps = list(range(0, 181, 5))
             # Asegurar base en 0 primero
             self._move_servo_to_angle('base', 0.0, step_deg=5.0, delay_between_steps=0.02, velocidad=0.45)
@@ -1083,21 +1083,21 @@ class ControladorRobotico:
             for deg in reversed(steps):
                 self._move_servo_to_angle('base', float(deg), step_deg=5.0, delay_between_steps=0.02, velocidad=0.45)
 
-            # 8) Fase de extension completa: hombro aumenta, codo disminuye coordinado
+            # 8) Fase de extension completa: hombro aumenta a 165°, codo disminuye a 34°
             shoulder_start = 114.0
-            shoulder_target = 170.0
+            shoulder_target = 165.0
             elbow_start = 72.0
-            elbow_target = 10.0
+            elbow_target = 34.0
             total_steps_ext = int(abs(shoulder_target - shoulder_start) // 5) + 1
             for i in range(total_steps_ext + 1):
                 prop = i / max(1, total_steps_ext)
                 s_deg = shoulder_start + (shoulder_target - shoulder_start) * prop
                 e_deg = elbow_start + (elbow_target - elbow_start) * prop
-                # Muñeca compensa dinámicamente entre 20..30° según progreso
-                w_deg = 20.0 + prop * 10.0
+                # Muñeca compensa dinámicamente desde 20° hasta aproximadamente 155°
+                w_deg = 20.0 + prop * 135.0
                 self._move_servo_to_angle('shoulder', s_deg, step_deg=5.0, delay_between_steps=0.02, velocidad=0.45)
                 self._move_servo_to_angle('elbow', e_deg, step_deg=5.0, delay_between_steps=0.02, velocidad=0.45)
-                self._move_servo_to_angle('wrist', w_deg, step_deg=3.0, delay_between_steps=0.01, velocidad=0.4)
+                self._move_servo_to_angle('wrist', w_deg, step_deg=5.0, delay_between_steps=0.02, velocidad=0.4)
 
             # 9) Cuando extendido, pinza otra vez +360/-360 (simulada) + pausa de 3s
             try:

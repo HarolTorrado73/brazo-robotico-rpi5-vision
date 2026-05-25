@@ -1,4 +1,4 @@
-# Brazo robótico autónomo con IA (v2)
+# Plataforma robótica modular con visión artificial asistida
 
 [![Python](https://img.shields.io/badge/Python-3.x-3776AB?logo=python&logoColor=white)](https://www.python.org/)
 [![Flask](https://img.shields.io/badge/Flask-3.x-000000?logo=flask&logoColor=white)](https://flask.palletsprojects.com/)
@@ -7,45 +7,119 @@
 [![Raspberry Pi](https://img.shields.io/badge/Raspberry%20Pi-5-C51A4A?logo=raspberrypi&logoColor=white)](https://www.raspberrypi.com/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-Brazo robótico autónomo que **detecta objetos con YOLO**, **clasifica por color (HSV)** y los deposita en **recipientes ordenados**. Incluye **interfaz web Flask** con video en vivo y **voz opcional** (micrófono USB + síntesis de voz).
+## Visión general
 
-> **Importante:** el repositorio no sustituye tu mesa de pruebas. Una instalación fiable exige validar en **tu** hardware: calibración, clases YOLO acordes a tus objetos, seguridad mecánica/eléctrica y audio. Consulta la checklist en **[PUESTA_EN_MARCHA.md](PUESTA_EN_MARCHA.md)**.
+Este proyecto es una **plataforma robótica modular con visión artificial y automatización física asistida** sobre hardware real.
 
-## Tabla de contenidos
+Su foco principal es integrar:
 
-- [Tecnologías](#tecnologías)
-- [Requisitos previos](#requisitos-previos)
-- [Instalación](#instalación)
-- [Uso rápido](#uso-rápido)
-- [Capturas (interfaz web)](#capturas-interfaz-web)
-- [Hardware](#hardware)
-- [Documentación](#documentación)
-- [Contribuye](#contribuye)
-- [Estructura del repositorio](#estructura-del-repositorio)
-- [Configuración](#configuración)
-- [Voz opcional](#voz-opcional)
-- [Licencia y comunidad](#licencia-y-comunidad)
+- percepción visual básica funcional,
+- lógica basada en reglas para clasificación y manipulación,
+- control de servomotores a través de PCA9685,
+- una interfaz de supervisión web con Flask,
+- mecanismos de seguridad para operaciones en Raspberry Pi.
 
-## Tecnologías
+## Qué hace el sistema
 
-| Área | Tecnologías |
-|------|-------------|
-| Lenguaje | Python 3 |
-| Web | Flask |
-| Visión | OpenCV (headless), Ultralytics YOLO, modelo NCNN en repo |
-| Hardware (Pi) | Adafruit PCA9685, gpiozero, RPi.GPIO, Picamera2 (Linux) |
-| Voz (opcional) | SpeechRecognition, espeak-ng / pyttsx3 (ver [HARDWARE_AUDIO.md](HARDWARE_AUDIO.md)) |
+El proyecto permite:
 
-## Requisitos previos
+- detectar objetos con un modelo YOLO preentrenado,
+- clasificar colores usando análisis HSV,
+- ejecutar movimientos secuenciales predefinidos para manipular un brazo robótico,
+- controlar servos físicos reales a través de PCA9685,
+- supervisar estado y vídeo en una interfaz web,
+- aplicar protecciones de seguridad para evitar daños en el hardware.
 
-- **Raspberry Pi 5** (recomendado) con Raspberry Pi OS, I2C y cámara habilitados.
-- **Python 3** con `venv`; herramientas del sistema: `i2c-tools`, dependencias de cámara según [PUESTA_EN_MARCHA.md](PUESTA_EN_MARCHA.md).
-- **Hardware:** PCA9685, servos (incluida **base MG996R** ~180° en canal 4), cámara CSI (p. ej. Arducam) y fuente adecuada.
+## Qué no hace el sistema
 
-Este proyecto se ejecuta en **Raspberry Pi OS en la Pi**. El control de servos y la cámara no está diseñado para Windows; solo el desarrollo/edición de código puede hacerse en Windows si lo deseas.
+Este repositorio no es una solución de inteligencia artificial avanzada. No incluye:
 
+- aprendizaje autónomo complejo,
+- adaptación continua del modelo en runtime,
+- entrenamiento de redes neuronales desde cero con un dataset propio robusto,
+- planeación robótica cinemática avanzada,
+- SLAM,
+- reinforcement learning,
+- autonomía total sin supervisión.
 
-## Instalación
+## Tecnologías y componentes
+
+- Raspberry Pi 5
+- Python 3
+- Flask
+- OpenCV
+- Ultralytics YOLO (preentrenado)
+- PCA9685
+- Servomotores
+- Cámara CSI
+- Análisis HSV para clasificación de color
+
+## Arquitectura por módulos
+
+### 1. Percepción
+
+- `arm_system/perception/vision/camera/main.py`
+  - captura imagen con Picamera2, `rpicam-still`, `libcamera-still` o OpenCV.
+- `arm_system/perception/vision/detection/main.py`
+  - carga modelo YOLO preentrenado con `ModelLoader`.
+- `arm_system/perception/vision/color_detector.py`
+  - analiza regiones en HSV para determinar el color dominante y localizar recipientes.
+
+### 2. Decisión y automatización asistida
+
+- `arm_system/autonomous_brain.py`
+  - orquesta el ciclo de escaneo, detección, clasificación y ejecución de tareas.
+  - usa lógica basada en reglas y secuencias predefinidas.
+  - incluye reintentos y manejos de fallo para no actuar con datos poco fiables.
+
+### 3. Actuación y control de hardware
+
+- `arm_system/control/arm_controller.py`
+  - control de servos basado en ángulos mediante `servo_config.json`.
+  - convierte ángulos seguros en pulsos PWM para PCA9685.
+- `arm_system/control/robot_controller.py`
+  - controlador legacy que usa `servo_config_legacy.json` y lógica por tiempo/pulsos.
+
+### 4. Interfaz y supervisión
+
+- `arm_system/autonomous_web.py`
+  - servidor Flask que muestra vídeo, estado, diagnósticos y controles.
+  - permite iniciar el ciclo asistido y controlar el brazo manualmente.
+
+## Seguridad y robustez
+
+Este proyecto prioriza la seguridad de hardware y la operación robusta:
+
+- `SafeController` (en `arm_system/safety/safe_controller.py`)
+  - valida ángulos objetivos antes de mover servos,
+  - aplica rate limiting,
+  - evita saltos bruscos por articulación,
+  - realiza interpolación suave con pasos controlados,
+  - ofrece `emergency_stop()` y `reset_emergency()`.
+
+- `HW_LOCK` (en `arm_system/hw_bus.py`)
+  - bloqueo global que evita accesos simultáneos al PCA9685,
+  - asegura coexistencia entre modo manual y subsistemas autónomos,
+  - reduce el riesgo de comandos conflictivos en I2C.
+
+- `servo_config.json`
+  - define límites seguros por articulación,
+  - describe `pulse_min_us`, `pulse_max_us`, `angle_safe_min_deg`, `angle_safe_max_deg` y `angle_home_deg`.
+
+## Integración hardware/software
+
+El valor real del proyecto está en integrar componentes físicos y lógicos:
+
+- Cámara CSI con captura de imagen real.
+- Detección visual con YOLO preentrenado.
+- Clasificación de color basada en HSV.
+- Control de servos con PCA9685.
+- Interfaz web para monitoreo y control.
+- Seguridad al mover hardware real.
+
+Esto no es solo software: es una plataforma embebida que coordina percepción y movimiento físico.
+
+## Instalación rápida
 
 ```bash
 sudo apt update
@@ -58,9 +132,14 @@ source venv/bin/activate
 pip install -r requirements.txt
 ```
 
-Voz (opcional): `sudo apt install -y espeak-ng portaudio19-dev alsa-utils` y `pip install -r requirements-voice.txt`. Detalle en [HARDWARE_AUDIO.md](HARDWARE_AUDIO.md).
+Para voz (opcional):
 
-## Uso rápido
+```bash
+sudo apt install -y espeak-ng portaudio19-dev alsa-utils
+pip install -r requirements-voice.txt
+```
+
+## Uso inicial
 
 ```bash
 cd ~/Downloads/BrazoRoboticoConIA/BrazoRoboticoConIA-v2
@@ -68,98 +147,88 @@ source venv/bin/activate
 python3 -m arm_system.autonomous_web
 ```
 
-Abre en el navegador desde la Raspberry Pi o desde otra máquina en la misma red:
+Abrir en el navegador:
 
 ```text
 http://<IP_DE_LA_RASPBERRY>:5000
 ```
 
-Esta interfaz solo se ejecuta en la Raspberry Pi con hardware conectado y no está destinada a correr el runtime de servos/cámara en Windows.
+## Qué presentar
 
-**Prueba mínima del brazo por ángulos** (`ArmController`, solo en la Pi): desde la raíz del repositorio, `python3 test_motor.py` (solo base) o `python3 test_grados_servos.py` (modo interactivo y rangos según `servo_config.json`).
+Presenta el proyecto como una **plataforma robótica asistida por visión** con automatización física limitada, no como un robot inteligente autónomo.
 
-## Capturas (interfaz web)
+### Mensaje recomendado
 
-La interfaz es visual (vídeo, controles de calibración y modo autónomo). Guarda imágenes en [`docs/assets/`](docs/assets/) y enlázalas aquí:
+> El proyecto es una plataforma robótica modular con visión artificial y automatización física asistida. Usa modelos YOLO preentrenados para percepción visual y reglas de control para mover el brazo de forma segura.
 
-```markdown
-![Panel web](docs/assets/panel-web.png)
-```
+### Qué enfatizar
 
-*(Sustituye por tus archivos reales cuando los tengas.)*
+- integración hardware/software,
+- modularidad del diseño,
+- seguridad de movimiento real,
+- separación clara entre percepción, decisión y actuación,
+- uso práctico de Raspberry Pi con cámara y PCA9685.
 
-## Hardware
+### Qué evitar
 
-- **PCA9685** (I2C `0x40`): hombro, codo, muñeca, pinza en canales 0–3 y **base** (rotación) en **canal 4** con servo **MG996R** ~180°. La web usa `servo_config_legacy.json`; `ArmController` usa `servo_config.json` (canales en `joints.*.channel`).
-- **Arducam CSI:** `rpicam-still` / Picamera2.
+- afirmar que el sistema aprende solo,
+- venderlo como IA avanzada o autonomía total,
+- sugerir que es un sistema industrial inteligente completo.
 
-Si usas **servos continuos**, en `arm_system/servo_config_legacy.json` pon `"tipo_servo": "continuo"` por articulación. Ver [REFERENCE.md](REFERENCE.md) y [CONEXIONES.md](CONEXIONES.md).
+## Limitaciones reales
 
-## Documentación
+- depende de un modelo YOLO preentrenado, no de un entrenamiento propio,
+- la detección funciona mejor en condiciones controladas,
+- la automatización es secuencial y basada en reglas,
+- no hay aprendizaje adaptativo ni planificación cinemática avanzada,
+- el sistema necesita calibración física para cada instalación.
 
-| Documento | Contenido |
-|-----------|-----------|
-| [PUESTA_EN_MARCHA.md](PUESTA_EN_MARCHA.md) | Checklist: calibración, YOLO, seguridad, audio, **initramfs tras apt** (Pi) |
-| [RECIPIENTES_Y_LUZ.md](RECIPIENTES_Y_LUZ.md) | Cubetas, luz, objetos nuevos para YOLO |
-| [CONEXIONES.md](CONEXIONES.md) | Diagrama de conexiones |
-| [REFERENCE.md](REFERENCE.md) | Guía técnica para desarrollo |
-| [LAB_WORKBENCH.md](LAB_WORKBENCH.md) | Laboratorio, modelo YOLO propio |
-| [HARDWARE_AUDIO.md](HARDWARE_AUDIO.md) | Micrófono y altavoz en la Pi |
-| [CONTRIBUTING.md](CONTRIBUTING.md) | Cómo colaborar, fork y pull requests |
+## Mejoras futuras realistas
 
-## Contribuye
-
-Si quieres aportar, sigue la guía en [CONTRIBUTING.md](CONTRIBUTING.md). El flujo recomendado es:
-
-1. Haz fork y clona tu repositorio.
-2. Crea una rama nueva desde `main`.
-3. Mantén los cambios pequeños y enfocados.
-4. Prueba lo que puedas en hardware o indica claramente qué no probaste.
-5. Abre un pull request con descripción, pruebas y contexto.
+- entrenar un modelo YOLO propio con datos del entorno real,
+- mejorar la detección de objetos pequeños ajustando `imgsz` y rangos HSV,
+- añadir sensores físicos de contacto o fuerza,
+- refinar la planificación de trayectorias con cinemática inversa,
+- documentar más casos de calibración y pruebas.
 
 ## Estructura del repositorio
 
 ```
 arm_system/
 ├── autonomous_web.py         # Interfaz web principal (Flask)
-├── autonomous_brain.py       # Lógica autónoma pick & place
-├── config_sistema.py         # Configuración global
-├── servo_config_legacy.json  # Pulsos calibrados web/autónomo (no borrar)
-├── servo_config.json         # ArmController (grados + joints)
-├── main.py                   # Menú consola alternativo
+├── autonomous_brain.py       # Ciclo de automatización asistida
+├── config_sistema.py         # Configuración global del sistema
+├── servo_config_legacy.json  # Pulsos calibrados para modo legacy
+├── servo_config.json         # Calibración en grados para ArmController
+├── main.py                   # Menú de consola alternativo
 ├── control/
-│   ├── robot_controller.py   # ControladorRobotico (legacy)
-│   └── arm_controller.py     # ArmController (PCA9685 por ángulos)
-└── perception/vision/
-    ├── camera/main.py
-    ├── detection/            # YOLO
-    └── color_detector.py
+│   ├── arm_controller.py     # Control moderno de servos por ángulos
+│   └── robot_controller.py   # Control legacy de servos por tiempo/pulsos
+├── perception/
+│   └── vision/
+│       ├── camera/main.py
+│       ├── detection/main.py
+│       └── color_detector.py
+├── safety/
+│   └── safe_controller.py    # Control seguro de servos
+├── hw_bus.py                 # Lock global para PCA9685
+└── voice_assistant.py        # Soporte opcional de voz
 ```
 
-## Configuración
+## Documentación adicional
 
-- `config_sistema.py`: `STEPPER_HABILITADO` (`False` por defecto: base con servo en canal 4; `True` solo si usas motor paso a paso en GPIO 17/18/19), `CAMARA_HABILITADA`, `PERMITIR_DETECCION_SIMULADA` (`False` en brazo real para no usar datos ficticios si falla la visión; `True` solo para pruebas sin hardware).
-- `servo_config_legacy.json`: `tipo_servo` (`posicional_180` o `continuo`), pulsos, tiempos, pinza.
-- `servo_config.json`: calibración en **grados** para `ArmController` (ver [REFERENCE.md](REFERENCE.md)).
-
-## Voz opcional
-
-1. En la Raspberry Pi: `sudo apt install -y espeak-ng portaudio19-dev alsa-utils`
-2. En el entorno virtual: `pip install -r requirements-voice.txt`
-3. En `arm_system/config_sistema.py`: `VOZ_HABILITADA = True` (y opcional `VOZ_ANUNCIAR_EVENTOS`).
-4. Si hay varios dispositivos de audio, ajusta `VOZ_MIC_DEVICE_INDEX` (ver [HARDWARE_AUDIO.md](HARDWARE_AUDIO.md)).
-
-El reconocimiento usa la API en la nube de Google (SpeechRecognition); requiere **Internet**. Frases de ejemplo: «iniciar», «pausa», «escanear», «home», «emergencia», «calibrar servos», «calibrar color». Lista completa en `voice_assistant.py`.
-
-Timbre “robot”: **espeak-ng** en Linux; sin eso, **pyttsx3**.
+- [PUESTA_EN_MARCHA.md](PUESTA_EN_MARCHA.md) — checklist de seguridad y calibración.
+- [REFERENCE.md](REFERENCE.md) — guía técnica para parámetros y hardware.
+- [LAB_WORKBENCH.md](LAB_WORKBENCH.md) — recomendaciones para entrenar modelos propios.
+- [HARDWARE_AUDIO.md](HARDWARE_AUDIO.md) — audio y micrófono en la Pi.
 
 ## Licencia y comunidad
 
-| Recurso | Descripción |
-|---------|-------------|
-| [LICENSE](LICENSE) | **MIT** — uso, modificación y distribución con aviso de copyright. |
-| [CONTRIBUTING.md](CONTRIBUTING.md) | Cómo reportar errores, proponer PRs y estilo de código. |
-| [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md) | Normas de comportamiento (basado en Contributor Covenant 2.1). |
-| [SECURITY.md](SECURITY.md) | Cómo informar vulnerabilidades **sin** usar issues públicos. |
+- Licencia MIT.
+- Normas de contribución en [CONTRIBUTING.md](CONTRIBUTING.md).
+- Código de conducta en [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md).
+- Reporte de seguridad en [SECURITY.md](SECURITY.md).
 
-Secretos y entorno local: usa `.env` (ignorado por git); plantilla en [`.env.example`](.env.example).
+---
+
+Para mayor profundidad en la presentación y los argumentos técnicos, consulta `docs/PRESENTATION_GUIDE.md`. 
